@@ -8,6 +8,7 @@ from tools.logger import logger
 from auth.auth import router as auth_router
 from auth.get_client_token import router as get_client_token_router
 from auth.token_validation_router import router as validate_token_router
+from api.templates_management import router as templates_master_router
 
 app = FastAPI(
     title="Bulletin Builder API"
@@ -47,6 +48,8 @@ app.include_router(auth_router)
 app.include_router(get_client_token_router)
 app.include_router(validate_token_router)
 
+# Templates Master
+app.include_router(templates_master_router)
 
 
 # uvicorn main:app --reload

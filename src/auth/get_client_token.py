@@ -28,7 +28,6 @@ async def get_token(body: ClientCredentials):
         response = await client.post(TOKEN_ENDPOINT, data=data, headers=headers)
 
     if response.status_code != 200:
-        print("Keycloak error:", response.text)
         raise HTTPException(status_code=401, detail="Credenciales inválidas o cliente no existe")
 
     return response.json()
