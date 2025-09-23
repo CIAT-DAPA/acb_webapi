@@ -1,16 +1,20 @@
-
-# Utilidades para acceso y autorización basadas en la estructura de la base de datos y el ORM
 from acb_orm.collections.groups import Group
 from acb_orm.collections.roles import Role
 from fastapi import Depends, HTTPException
+from acb_orm.collections.users import User
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError, ExpiredSignatureError
 import requests
 import os
 from dotenv import load_dotenv
 from typing import List
+from tools.utils import serialize_log
 
 load_dotenv()
+
+# Variables globales para Keycloak
+KEYCLOAK_URL = os.getenv("KEYCLOAK_URL")
+KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM")
 
 security = HTTPBearer()
 
@@ -33,6 +37,29 @@ def get_user_roles_by_group(user_id: str) -> dict:
                 roles_by_group[str(group.id)] = str(ua.role_id.id)
     return roles_by_group
 
+
+def get_user_roles_by_group_complet(user_id: str) -> dict:
+    """
+    Devuelve un diccionario {group_id: role_id} para el usuario.
+    """
+    user_groups = Group.objects(users_access__user_id=user_id)
+    groups_info = []
+    for group in user_groups:
+        # Buscar el acceso del usuario en el grupo
+        user_access = next((ua for ua in group.users_access if str(ua.user_id.id) == str(user_id)), None)
+        if user_access:
+            role_obj = Role.objects(id=user_access.role_id.id).first()
+            groups_info.append({
+                "group_id": str(group.id),
+                "group_name": group.group_name,
+                "role": {
+                    "id": str(role_obj.id) if role_obj else None,
+                    "name": role_obj.role_name if role_obj else None,
+                    "permissions": role_obj.permissions if role_obj else {}
+                }
+            })
+    return groups_info
+
 def get_accessible_resources(model, user_id: str):
     """
     Devuelve los recursos accesibles para el usuario (públicos y restringidos por grupo).
@@ -42,21 +69,24 @@ def get_accessible_resources(model, user_id: str):
     restricted = model.objects(access_config__access_type="restricted", access_config__allowed_groups__in=user_groups)
     return list(public) + list(restricted)
 
-def user_has_permission(user_id: str, group_id: str, required_permission: str) -> bool:
+def user_has_permission(user_id: str, group_id: str, module: str, action: str) -> bool:
     """
-    Verifica si el usuario tiene el permiso requerido en el grupo.
+    Checks if the user has the required permission (action) for a module in the group.
+    :param user_id: User ID
+    :param group_id: Group ID
+    :param module: Module name (e.g. 'template_management')
+    :param action: Action key ('c', 'r', 'u', 'd')
+    :return: True if allowed, False otherwise
     """
     group = Group.objects.get(id=group_id)
     user_access = next((ua for ua in group.users_access if str(ua.user_id.id) == str(user_id)), None)
     if not user_access:
         return False
     role = Role.objects.get(id=user_access.role_id.id)
-    return required_permission in role.permissions
+    return role.permissions.get(module, {}).get(action, False)
 
 def get_jwks():
-    keycloak_url = os.getenv("KEYCLOAK_URL", "http://localhost:8080")
-    realm_name = os.getenv("REALM_NAME", "BulletinBuilder")
-    jwks_url = f"{keycloak_url}/realms/{realm_name}/protocol/openid-connect/certs"
+    jwks_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"
 
     response = requests.get(jwks_url)
     if response.status_code != 200:
@@ -72,17 +102,35 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     if not key:
         raise HTTPException(status_code=401, detail="Clave pública no encontrada")
 
-    keycloak_url = os.getenv("KEYCLOAK_URL", "http://localhost:8080")
-    realm_name = os.getenv("REALM_NAME", "BulletinBuilder")
-
     try:
         payload = jwt.decode(
             token,
             key,
             algorithms=[unverified_header["alg"]],
             audience="account",
-            issuer=f"{keycloak_url}/realms/{realm_name}",
+            issuer=f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}",
         )
+        ext_id = payload.get("sub")
+        user_obj = User.objects(ext_id=ext_id).first()
+        if not user_obj:
+            raise HTTPException(status_code=403, detail="User not found or not authorized")
+        if not user_obj.is_active:
+            raise HTTPException(status_code=403, detail="User is not active")
+        
+        payload = {
+            k: v for k, v in payload.items()
+            if k not in ["realm_access", "allowed-origins", "resource_access"]
+        }
+
+        # Construir lista de grupos con roles y permisos
+        groups_info = get_user_roles_by_group_complet(user_obj.id)
+
+        payload["user_db"] = {
+            "id": str(user_obj.id),
+            "is_active": user_obj.is_active,
+            "log": serialize_log(user_obj.log),
+            "groups": groups_info
+        }
         return payload
 
     except ExpiredSignatureError:
