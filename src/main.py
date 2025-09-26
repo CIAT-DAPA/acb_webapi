@@ -9,6 +9,9 @@ from auth.auth import router as auth_router
 from auth.get_client_token import router as get_client_token_router
 from auth.token_validation_router import router as validate_token_router
 from api.templates_management import router as templates_master_router
+from api.roles_management import router as roles_router
+from api.groups_management import router as groups_router
+from api.bulletins_management import router as bulletins_router
 
 app = FastAPI(
     title="Bulletin Builder API"
@@ -30,7 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
+@app.get("/", include_in_schema=False )
 def read_root():
     return {"message": "Bulletin Builder API is running!"}
 
@@ -48,8 +51,18 @@ app.include_router(auth_router)
 app.include_router(get_client_token_router)
 app.include_router(validate_token_router)
 
+
 # Templates Master
 app.include_router(templates_master_router)
+
+# Roles
+app.include_router(roles_router)
+
+# Groups
+app.include_router(groups_router)
+
+# Bulletins
+app.include_router(bulletins_router)
 
 
 # uvicorn main:app --reload
