@@ -78,6 +78,17 @@ def user_has_permission(user_id: str, group_id: str, module: str, action: str) -
     :param action: Action key ('c', 'r', 'u', 'd')
     :return: True if allowed, False otherwise
     """
+    # 1. Verificar si el usuario tiene el rol global
+    global_admin_roles = ["admin_global", "superadmin", "global"]
+    user_groups = Group.objects(users_access__user_id=user_id)
+    for group in user_groups:
+        for ua in group.users_access:
+            if str(ua.user_id.id) == str(user_id):
+                role = Role.objects.get(id=ua.role_id.id)
+                if role.role_name in global_admin_roles:
+                    return True
+
+    # 2. Permiso normal por grupo
     group = Group.objects.get(id=group_id)
     user_access = next((ua for ua in group.users_access if str(ua.user_id.id) == str(user_id)), None)
     if not user_access:
