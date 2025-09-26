@@ -27,7 +27,7 @@ def create_template(
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    return service_template.create(template, user_id)
+    return service_template.create(template, user_id, 'template_management')
 
 @router.put("/{template_id}", response_model=TemplatesMasterRead)
 def update_template(
@@ -40,7 +40,7 @@ def update_template(
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    return service_template.update(template_id, template, user_id)
+    return service_template.update(template_id, template, user_id, 'template_management')
 
 # @router.delete("/{template_id}")
 # def delete_template(

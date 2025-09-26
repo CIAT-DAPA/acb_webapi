@@ -90,7 +90,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, ReadSchemaType, UpdateSch
             logger.error(f"Error in get_all: {e}")
             raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
-    def create(self, obj_in: CreateSchemaType, user_id: Optional[str] = None) -> ReadSchemaType:
+    def create(self, obj_in: CreateSchemaType, user_id: Optional[str] = None, module: Optional[str] = None) -> ReadSchemaType:
         """
         Creates a new resource from the input schema and serializes it.
         If user_id is provided, generates the log automatically.
@@ -98,17 +98,18 @@ class BaseService(Generic[ModelType, CreateSchemaType, ReadSchemaType, UpdateSch
         :param user_id: User ID (optional)
         :return: Created and serialized resource
         """
-        try:
-            obj_data = obj_in.model_dump()
-            # Si el modelo tiene campo log y se proporciona user_id, generarlo automáticamente
-            if user_id is not None and "access_config" in self.model._fields:
+        obj_data = obj_in.model_dump()
+
+        if user_id is not None and "access_config" in self.model._fields and module is not None:
                 access_type = obj_data["access_config"].get("access_type")
                 if access_type != "public":
                     allowed_groups = obj_data["access_config"].get("allowed_groups", [])
                     # Verificar permisos en todos los grupos requeridos
                     for group_id in allowed_groups:
-                        if not user_has_permission(user_id, str(group_id), "template_management", "c"):
-                            raise HTTPException(status_code=403, detail=f"User does not have permission to create templates in group {group_id}.")
+                        if not user_has_permission(user_id, str(group_id), module, "c"):
+                            raise HTTPException(status_code=403, detail=f"User does not have permission to create resource in group {group_id}.")
+        try:
+            obj_data = obj_in.model_dump()            
             
             if user_id is not None and "log" in self.model._fields:
                 obj_data["log"] = LogCreate(creator_user_id=user_id).model_dump()
@@ -121,7 +122,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, ReadSchemaType, UpdateSch
             logger.error(f"Error in create: {e}")
             raise HTTPException(status_code=500, detail=f"Error creating resource: {str(e)}")
 
-    def update(self, id: str, obj_in: UpdateSchemaType | Dict[str, Any], user_id: Optional[str] = None) -> ReadSchemaType:
+    def update(self, id: str, obj_in: UpdateSchemaType | Dict[str, Any], user_id: Optional[str] = None, module: Optional[str] = None) -> ReadSchemaType:
         """
         Updates a resource by its ID and serializes it.
         If user_id is provided, updates the log automatically.
@@ -130,26 +131,25 @@ class BaseService(Generic[ModelType, CreateSchemaType, ReadSchemaType, UpdateSch
         :param user_id: User ID (optional)
         :return: Updated and serialized resource or None if not found
         """
+        if not ObjectId.is_valid(id):
+            logger.error(f"Invalid template ID format: {id}")
+            raise HTTPException(status_code=400, detail="Invalid template ID format")
+
+        db_obj = self.model.objects.get(id=id)
+        update_data = obj_in.model_dump(exclude_unset=True) if isinstance(obj_in, BaseModel) else obj_in
+        obj_dict = db_obj.to_mongo().to_dict()
+
+        if user_id is not None and "access_config" in self.model._fields and module is not None:
+            access_type = obj_dict["access_config"].get("access_type")
+            if access_type != "public":
+                allowed_groups = obj_dict["access_config"].get("allowed_groups", [])
+                # Verificar permisos en todos los grupos requeridos
+                for group_id in allowed_groups:
+                    if not user_has_permission(user_id, str(group_id), module, "u"):
+                        raise HTTPException(status_code=403, detail=f"User does not have permission to update resource in group {group_id}.")
+
         try:
-            if not ObjectId.is_valid(id):
-                logger.error(f"Invalid template ID format: {id}")
-                raise HTTPException(status_code=400, detail="Invalid template ID format")
             
-            db_obj = self.model.objects.get(id=id)
-            update_data = obj_in.model_dump(exclude_unset=True) if isinstance(obj_in, BaseModel) else obj_in
-            obj_dict = db_obj.to_mongo().to_dict()
-
-            # Convertir campos ReferenceField de str a ObjectId si es necesario
-
-            if user_id is not None and "access_config" in self.model._fields:
-                access_type = obj_dict["access_config"].get("access_type")
-                if access_type != "public":
-                    allowed_groups = obj_dict["access_config"].get("allowed_groups", [])
-                    # Verificar permisos en todos los grupos requeridos
-                    for group_id in allowed_groups:
-                        if not user_has_permission(user_id, str(group_id), "template_management", "u"):
-                            raise HTTPException(status_code=403, detail=f"User does not have permission to update templates in group {group_id}.")
-
             if user_id is not None and "log" in self.model._fields:
                 # Conservar creator_user_id y created_at del log original (dict)
                 original_log = obj_dict.get('log', {})

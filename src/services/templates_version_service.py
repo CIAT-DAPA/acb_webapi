@@ -28,21 +28,11 @@ class TemplatesVersionService(
             data['previous_version_id'] = str(data['previous_version_id'])
         if 'log' in data:
             data['log'] = serialize_log(document.log)
-        if 'access_config' in data and isinstance(data['access_config'], dict):
-            if 'allowed_groups' in data['access_config'] and isinstance(data['access_config']['allowed_groups'], list):
-                data['access_config']['allowed_groups'] = [str(g) if isinstance(g, ObjectId) else g for g in data['access_config']['allowed_groups']]
         return data
 
 
     def __init__(self):
         super().__init__(TemplatesVersion, TemplatesVersionRead)
-
-    def get_all_by_creation_desc(self) -> List[TemplatesVersionRead]:
-        """
-        Returns all template versions ordered by creation date (most recent first).
-        """
-        objs = self.model.objects.order_by('-log__created_at')
-        return [self.read_schema.model_validate(self._serialize_document(obj)) for obj in objs]
     
     def get_by_template_id(self, template_id: str) -> List[TemplatesVersionRead]:
         """
