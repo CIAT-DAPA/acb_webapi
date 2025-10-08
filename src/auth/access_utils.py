@@ -111,7 +111,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     jwks = get_jwks()
     key = next((k for k in jwks["keys"] if k["kid"] == unverified_header["kid"]), None)
     if not key:
-        raise HTTPException(status_code=401, detail="Clave pública no encontrada")
+        raise HTTPException(status_code=401, detail="Public key not found")
 
     try:
         payload = jwt.decode(
@@ -124,10 +124,17 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         ext_id = payload.get("sub")
         user_obj = User.objects(ext_id=ext_id).first()
         if not user_obj:
-            raise HTTPException(status_code=403, detail="User not found or not authorized")
+            # Crear el usuario en la base de datos si no existe
+            user_obj = User(
+                ext_id=ext_id,
+                first_name=payload.get("given_name", ""),
+                last_name=payload.get("family_name", ""),
+                is_active=True
+            )
+            user_obj.save()
         if not user_obj.is_active:
-            raise HTTPException(status_code=403, detail="User is not active")
-        
+            raise HTTPException(status_code=403, detail="User is not active or not authorized")
+
         payload = {
             k: v for k, v in payload.items()
             if k not in ["realm_access", "allowed-origins", "resource_access"]

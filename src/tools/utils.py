@@ -2,6 +2,7 @@ import re
 from fastapi import HTTPException
 from bson import ObjectId
 from typing import List
+from acb_orm.collections.users import User
 
 def parse_object_ids(ids_str: str) -> List[str]:
     """Parse and validate a comma-separated string of ObjectIds."""
@@ -28,8 +29,23 @@ def build_search_query(terms: List[str], fields: List[str]) -> dict:
 def serialize_log(log_obj):
     if log_obj is None:
         return None
-    log_dict = log_obj.to_mongo().to_dict()
+    log_dict = log_obj.to_mongo().to_dict()  
+    
     for key in ["creator_user_id", "updater_user_id"]:
         if key in log_dict and log_dict[key] is not None:
-            log_dict[key] = str(log_dict[key])
+            user_id = str(log_dict[key])
+            log_dict[key] = user_id
+            
+            try:
+                user = User.objects(id=user_id).first()
+                if user:
+                    if key == "creator_user_id":
+                        log_dict["creator_first_name"] = getattr(user, 'first_name', None)
+                        log_dict["creator_last_name"] = getattr(user, 'last_name', None)
+                    elif key == "updater_user_id":
+                        log_dict["updater_first_name"] = getattr(user, 'first_name', None)
+                        log_dict["updater_last_name"] = getattr(user, 'last_name', None)
+            except Exception:
+                pass
+    
     return log_dict
