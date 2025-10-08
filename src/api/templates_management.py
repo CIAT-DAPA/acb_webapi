@@ -7,6 +7,7 @@ from acb_orm.schemas.templates_master_schema import TemplatesMasterCreate, Templ
 from acb_orm.schemas.templates_version_schema import TemplatesVersionRead, TemplatesVersionCreate, TemplatesVersionUpdate
 from services.templates_version_service import TemplatesVersionService
 from acb_orm.enums.status_template import StatusTemplate
+from schemas.response_models import TemplateWithCurrentVersion
 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from auth.access_utils import get_current_user, user_has_permission
@@ -121,27 +122,37 @@ def get_template_by_id(
         raise HTTPException(status_code=404, detail="Not found or no access")
     return templates[0]
 
-@router.get("/{template_id}/current-version", response_model=TemplatesVersionRead)
+@router.get("/{template_id}/current-version", response_model=TemplateWithCurrentVersion)
 def get_current_version(
     template_id: str = Path(..., description="Unique identifier of the template master document."),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Returns the current version of a template by its unique ID, validating user access.
+    Returns the template master and its current version by template ID, validating user access.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    # Verificar acceso al template
+    
+    templates = service_template.get_accessible_resources(user_id, filters={"id": template_id})
+    if not templates:
+        raise HTTPException(status_code=404, detail="Not found or no access")
+    
+    template_master = templates[0]
+    
     version_id = service_template.get_current_version_id(template_id)
     if not version_id:
         raise HTTPException(status_code=404, detail="No current version found")
-    # Obtener la versión actual
+    
     try:
         current_version = service_template_version.read_schema.model_validate(service_template_version._serialize_document(version_id))
     except Exception as e:
         logger.error(f"Error retrieving current version: {e}")
         raise HTTPException(status_code=500)
-    return current_version
+    
+    return TemplateWithCurrentVersion(
+        template_master=template_master,
+        current_version=current_version
+    )
 
 @router.post("/versions", response_model=TemplatesVersionRead)
 def create_template_version(
@@ -165,6 +176,10 @@ def create_template_version(
     version_data = version.model_dump()
     if previous_version_id:
         version_data["previous_version_id"] = previous_version_id
+        previous_num =  service_template_version.get_by_id(str(previous_version_id)).version_num
+        version_data["version_num"] = previous_num + 1
+    else:
+        version_data["version_num"] = 1
     # Crear la versión con el previous_version_id correcto
     version_obj = service_template_version.create(TemplatesVersionCreate(**version_data), user_id)
     # Actualizar el master con el nuevo current_version_id

@@ -7,6 +7,7 @@ from acb_orm.schemas.bulletins_master_schema import BulletinsMasterCreate, Bulle
 from acb_orm.schemas.bulletins_version_schema import BulletinsVersionRead, BulletinsVersionCreate, BulletinsVersionUpdate
 from acb_orm.enums.status_bulletin import StatusBulletin
 from auth.access_utils import get_current_user, user_has_permission
+from schemas.response_models import BulletinWithCurrentVersion
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 router = APIRouter(prefix="/bulletins", tags=["Bulletin Management"])
@@ -98,24 +99,37 @@ def get_bulletin_by_id(
         raise HTTPException(status_code=404, detail="Not found or no access")
     return bulletins[0]
 
-@router.get("/{bulletin_id}/current-version", response_model=BulletinsVersionRead)
+@router.get("/{bulletin_id}/current-version", response_model=BulletinWithCurrentVersion)
 def get_current_version(
     bulletin_id: str = Path(..., description="ID del boletín"),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Returns the current version of a bulletin by its ID, validating user access.
+    Returns the bulletin master and its current version by bulletin ID, validating user access.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
+    
+    # Verificar acceso al bulletin master
+    bulletins = bulletins_master_service.get_accessible_resources(user_id, filters={"id": bulletin_id})
+    if not bulletins:
+        raise HTTPException(status_code=404, detail="Not found or no access")
+    
+    bulletin_master = bulletins[0]
+    
     version_id = bulletins_master_service.get_current_version_id(bulletin_id)
     if not version_id:
         raise HTTPException(status_code=404, detail="No current version found")
+    
     try:
         current_version = bulletins_version_service.read_schema.model_validate(bulletins_version_service._serialize_document(version_id))
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error retrieving current version")
-    return current_version
+    
+    return BulletinWithCurrentVersion(
+        bulletin_master=bulletin_master,
+        current_version=current_version
+    )
 
 # --- CRUD y consulta de versiones de boletines ---
 
@@ -137,6 +151,10 @@ def create_bulletin_version(
     version_data = version.model_dump()
     if previous_version_id:
         version_data["previous_version_id"] = previous_version_id
+        previous_num =  bulletins_version_service.get_by_id(str(previous_version_id)).version_num
+        version_data["version_num"] = previous_num + 1
+    else:
+        version_data["version_num"] = 1
     version_obj = bulletins_version_service.create(BulletinsVersionCreate(**version_data), user_id)
     # Actualizar el master con el nuevo current_version_id
     update_data = BulletinsMasterUpdate(current_version_id=str(version_obj.id))
