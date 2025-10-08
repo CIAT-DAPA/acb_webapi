@@ -13,6 +13,7 @@ from api.roles_management import router as roles_router
 from api.groups_management import router as groups_router
 from api.bulletins_management import router as bulletins_router
 from api.visual_resources_management import router as visual_resources_router
+from api.cards_management import router as cards_router
 
 app = FastAPI(
     title="Bulletin Builder API"
@@ -68,5 +69,7 @@ app.include_router(bulletins_router)
 # Visual Resources
 app.include_router(visual_resources_router)
 
+# Cards
+app.include_router(cards_router)
 
 # uvicorn main:app --reload

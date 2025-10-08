@@ -1,6 +1,6 @@
 from typing import TypeVar, Generic, Type, Optional, Any, Dict, List
-from pydantic import BaseModel
-from mongoengine import Document, DoesNotExist
+from pydantic import BaseModel, ValidationError
+from mongoengine import Document, DoesNotExist, ValidationError as MongoValidationError, NotUniqueError
 from mongoengine.fields import ReferenceField
 from bson import ObjectId
 from acb_orm.schemas.log_schema import LogUpdate, LogCreate
@@ -118,6 +118,13 @@ class BaseService(Generic[ModelType, CreateSchemaType, ReadSchemaType, UpdateSch
             db_obj.save()
 
             return self.read_schema.model_validate(self._serialize_document(db_obj))
+        
+        except NotUniqueError as e:
+            logger.error(f"Duplicate key error in create: {e}")
+            raise HTTPException(status_code=409, detail=f"Duplicate key error: {str(e)}")
+        except (ValidationError, MongoValidationError) as e:
+            logger.error(f"Validation error in create: {e}")
+            raise HTTPException(status_code=400, detail=f"Validation error: {str(e)}")
         except Exception as e:
             logger.error(f"Error in create: {e}")
             raise HTTPException(status_code=500, detail=f"Error creating resource: {str(e)}")
@@ -171,6 +178,12 @@ class BaseService(Generic[ModelType, CreateSchemaType, ReadSchemaType, UpdateSch
         except DoesNotExist as e:
             logger.error(f"Resource not found in update: id={id} - {e}")
             raise HTTPException(status_code=404, detail="Resource not found")
+        except NotUniqueError as e:
+            logger.error(f"Duplicate key error in update: {e}")
+            raise HTTPException(status_code=409, detail=f"Duplicate key error: {str(e)}")
+        except (ValidationError, MongoValidationError) as e:
+            logger.error(f"Validation error in update: {e}")
+            raise HTTPException(status_code=400, detail=f"Validation error: {str(e)}")
         except Exception as e:
             logger.error(f"Error in update: {e}")
             raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
