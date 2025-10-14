@@ -2,7 +2,10 @@ from typing import List, Optional, Any
 from bson import ObjectId
 from fastapi import HTTPException
 from acb_orm.collections.groups import Group
+from acb_orm.collections.roles import Role
+from acb_orm.auxiliaries.user_access import UserAccess
 from acb_orm.schemas.groups_schema import GroupsCreate, GroupsRead, GroupsUpdate
+from acb_orm.schemas.log_schema import LogUpdate
 from mongoengine import DoesNotExist
 from auth.access_utils import serialize_log
 from .base_service import BaseService
@@ -66,50 +69,86 @@ class GroupsService(
         objs = Group.objects(country__iexact=country_code)
         return [self.read_schema.model_validate(self._serialize_document(obj)) for obj in objs]
 
-    def add_user_to_group(self, group_id: str, user_id: str, role_id: str) -> GroupsRead:
+    def _update_group_log(self, group: Group, user_id: Optional[str] = None) -> None:
         """
-        Agrega un usuario con un rol al grupo especificado.
-        Si el usuario ya existe en el grupo, lanza un error.
+        Updates the log of a group when modifications are made.
+        If user_id is provided, updates the log with the updater information.
         """
-        group = Group.objects.get(id=group_id)
+        if user_id is not None and hasattr(group, 'log') and group.log:
+            # Preserve original creator information
+            original_log = group.to_mongo().to_dict().get('log', {})
+            print(original_log)
+            log_update = LogUpdate(updater_user_id=user_id).model_dump()
+            if original_log:
+                log_update["creator_user_id"] = original_log.get("creator_user_id")
+                log_update["created_at"] = original_log.get("created_at")
+            # Update the log fields
+            for key, value in log_update.items():
+                if isinstance(value, str) and ObjectId.is_valid(value):
+                    value = ObjectId(value)
+                setattr(group.log, key, value)
+
+    def add_user_to_group(self, group_id: str, user_id: str, role_id: str, updater_user_id: Optional[str] = None) -> GroupsRead:
+        """
+        Adds a user with a role to the specified group.
+        If the user already exists in the group, raises an error.
+        """
+        try:
+            group = Group.objects.get(id=group_id)
+        except Group.DoesNotExist:
+            raise HTTPException(status_code=404, detail="Group not found")
+
         if any(str(ua.user_id.id) == str(user_id) for ua in group.users_access):
-            raise HTTPException(status_code=400, detail="El usuario ya pertenece al grupo")
-        group.users_access.append({"user_id": ObjectId(user_id), "role_id": ObjectId(role_id)})
+            raise HTTPException(status_code=400, detail="User already belongs to the group")
+        user_access = UserAccess(user_id=ObjectId(user_id), role_id=ObjectId(role_id))
+        group.users_access.append(user_access)
+        self._update_group_log(group, updater_user_id)
         group.save()
         return self.read_schema.model_validate(self._serialize_document(group))
 
-    def remove_user_from_group(self, group_id: str, user_id: str) -> GroupsRead:
+    def remove_user_from_group(self, group_id: str, user_id: str, updater_user_id: Optional[str] = None) -> GroupsRead:
         """
-        Elimina un usuario del grupo especificado.
-        Si el usuario no está en el grupo, lanza un error.
+        Removes a user from the specified group.
+        If the user is not in the group, raises an error.
         """
         group = Group.objects.get(id=group_id)
         original_count = len(group.users_access)
         group.users_access = [ua for ua in group.users_access if str(ua.user_id.id) != str(user_id)]
         if len(group.users_access) == original_count:
-            raise HTTPException(status_code=404, detail="El usuario no pertenece al grupo")
+            raise HTTPException(status_code=404, detail="User does not belong to the group")
+        self._update_group_log(group, updater_user_id)
         group.save()
         return self.read_schema.model_validate(self._serialize_document(group))
 
-    def update_user_role_in_group(self, group_id: str, user_id: str, new_role_id: str) -> GroupsRead:
+    def update_user_role_in_group(self, group_id: str, user_id: str, new_role_id: str, updater_user_id: Optional[str] = None) -> GroupsRead:
         """
-        Actualiza el rol de un usuario en el grupo especificado.
-        Si el usuario no está en el grupo, lanza un error.
+        Updates a user's role in the specified group.
+        If the user is not in the group, raises an error.
         """
-        group = Group.objects.get(id=group_id)
+        try:
+            group = Group.objects.get(id=group_id)
+        except Group.DoesNotExist:
+            raise HTTPException(status_code=404, detail="Group not found")
+
+        try:
+            new_role = Role.objects.get(id=new_role_id)
+        except Role.DoesNotExist:
+            raise HTTPException(status_code=404, detail="Role not found")
+
         updated = False
         for ua in group.users_access:
             if str(ua.user_id.id) == str(user_id):
-                ua.role_id = ObjectId(new_role_id)
+                ua.role_id = new_role
                 updated = True
         if not updated:
-            raise HTTPException(status_code=404, detail="El usuario no pertenece al grupo")
+            raise HTTPException(status_code=404, detail="User does not belong to the group")
+        self._update_group_log(group, updater_user_id)
         group.save()
         return self.read_schema.model_validate(self._serialize_document(group))
 
     def list_users_in_group(self, group_id: str) -> list:
         """
-        Devuelve la lista de usuarios (y sus roles) de un grupo dado.
+        Returns the list of users (and their roles) for a given group.
         """
         group = Group.objects.get(id=group_id)
         return [
@@ -122,7 +161,7 @@ class GroupsService(
 
     def list_groups_and_roles_for_user(self, user_id: str) -> list:
         """
-        Devuelve todos los grupos a los que pertenece un usuario y el rol que tiene en cada uno.
+        Returns all groups a user belongs to and their role in each one.
         """
         groups = Group.objects(users_access__user_id=ObjectId(user_id))
         result = []
@@ -138,7 +177,7 @@ class GroupsService(
 
     def user_has_role_in_group(self, group_id: str, user_id: str, role_id: str) -> bool:
         """
-        Verifica si el usuario tiene el rol especificado en el grupo.
+        Verifies if the user has the specified role in the group.
         """
         group = Group.objects.get(id=group_id)
         for ua in group.users_access:
