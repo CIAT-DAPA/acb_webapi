@@ -24,7 +24,7 @@ def create_template(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Creates a new template master document.
+    Create a new template master document.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
@@ -37,7 +37,7 @@ def update_template(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Updates an existing template master document by ID. Checks permissions and updates log with user info.
+    Update an existing template master document by ID. Permission checks and log update are performed.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
@@ -74,7 +74,7 @@ def get_all_templates(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Returns all templates accessible to the current user.
+    Return all templates accessible to the current user.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]

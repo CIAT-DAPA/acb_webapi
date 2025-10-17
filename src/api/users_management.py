@@ -15,7 +15,7 @@ def create_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Creates a new user document.
+    Create a new user document.
     """
     current_user = get_current_user(credentials)
     user_id = current_user["user_db"]["id"]
@@ -28,7 +28,7 @@ def update_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Updates a user document by its ID. Updates the log with current user info.
+    Update a user by its ID. Log is updated with current user information.
     """
     current_user = get_current_user(credentials)
     updater_user_id = current_user["user_db"]["id"]
@@ -40,7 +40,7 @@ def get_all_users(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Returns all users. Can filter by active status using query parameter.
+    Return all users. Can filter by active status using the query parameter.
     """
     current_user = get_current_user(credentials)
     

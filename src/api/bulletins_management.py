@@ -16,7 +16,7 @@ bulletins_version_service = BulletinsVersionService()
 security = HTTPBearer()
 
 
-# --- CRUD y consulta de boletines master ---
+# --- CRUD and queries for bulletin masters ---
 
 @router.post("/", response_model=BulletinsMasterRead)
 def create_bulletin(
@@ -32,7 +32,7 @@ def create_bulletin(
 
 @router.put("/{bulletin_id}", response_model=BulletinsMasterRead)
 def update_bulletin(
-    bulletin_id: str = Path(..., description="ID del boletín a actualizar"),
+    bulletin_id: str = Path(..., description="ID of the bulletin to update"),
     bulletin: BulletinsMasterUpdate = ...,
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
@@ -77,7 +77,7 @@ def get_bulletins_by_status(
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    # Validar que el status sea uno de los permitidos
+    # Validate that the status is allowed
     if status not in StatusBulletin._value2member_map_:
         allowed = list(StatusBulletin._value2member_map_.keys())
         raise HTTPException(status_code=400, detail=f"Invalid status: {status}. Allowed: {allowed}")
@@ -86,7 +86,7 @@ def get_bulletins_by_status(
 
 @router.get("/{bulletin_id}", response_model=BulletinsMasterRead)
 def get_bulletin_by_id(
-    bulletin_id: str = Path(..., description="ID del boletín"),
+    bulletin_id: str = Path(..., description="Bulletin ID"),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
@@ -110,7 +110,7 @@ def get_current_version(
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
     
-    # Verificar acceso al bulletin master
+    # Verify access to the bulletin master
     bulletins = bulletins_master_service.get_accessible_resources(user_id, filters={"id": bulletin_id})
     if not bulletins:
         raise HTTPException(status_code=404, detail="Not found or no access")
@@ -131,7 +131,7 @@ def get_current_version(
         current_version=current_version
     )
 
-# --- CRUD y consulta de versiones de boletines ---
+# --- CRUD and queries for bulletin versions ---
 
 @router.post("/versions", response_model=BulletinsVersionRead)
 def create_bulletin_version(
@@ -156,7 +156,7 @@ def create_bulletin_version(
     else:
         version_data["version_num"] = 1
     version_obj = bulletins_version_service.create(BulletinsVersionCreate(**version_data), user_id)
-    # Actualizar el master con el nuevo current_version_id
+    # Update the master with the new current_version_id
     update_data = BulletinsMasterUpdate(current_version_id=str(version_obj.id))
     bulletins_master_service.update(version.bulletin_master_id, update_data, user_id)
     return version_obj

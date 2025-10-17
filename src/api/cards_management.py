@@ -16,7 +16,7 @@ def create_card(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Creates a new card document.
+    Create a new card document.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
@@ -29,7 +29,7 @@ def update_card(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Updates a card document by its ID. Checks permissions and updates the log with user info.
+    Update a card by its ID. Permission checks and log update are performed.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
@@ -53,7 +53,7 @@ def get_all_cards(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Returns all cards accessible to the current user.
+    Return all cards accessible to the current user.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
@@ -65,7 +65,7 @@ def get_cards_by_name(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Returns cards whose name contains the given substring (case-insensitive).
+    Return cards whose name contains the given substring (case-insensitive).
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]

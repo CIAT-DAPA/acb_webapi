@@ -17,7 +17,7 @@ def create_visual_resource(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Creates a new visual resource document.
+    Create a new visual resource document.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
@@ -30,7 +30,7 @@ def update_visual_resource(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Updates a visual resource document by its ID. Checks permissions and updates the log with user info.
+    Update a visual resource by its ID. Permission checks and log updates are applied.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
@@ -41,7 +41,7 @@ def get_all_visual_resources(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Returns all visual resources accessible to the current user.
+    Return all visual resources accessible to the current user.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
