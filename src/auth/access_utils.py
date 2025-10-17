@@ -8,6 +8,7 @@ import requests
 import os
 from dotenv import load_dotenv
 from typing import List
+from constants.permissions import GLOBAL_ADMIN_ROLE_NAMES, MODULE_ACCESS_CONTROL
 from tools.utils import serialize_log
 
 load_dotenv()
@@ -78,14 +79,13 @@ def user_has_permission(user_id: str, group_id: str, module: str, action: str) -
     :param action: Action key ('c', 'r', 'u', 'd')
     :return: True if allowed, False otherwise
     """
-    # 1. Verificar si el usuario tiene el rol global
-    global_admin_roles = ["admin_global", "superadmin", "global"]
+    # 1. Verificar si el usuario tiene el rol global (superadmin u otros definidos)
     user_groups = Group.objects(users_access__user_id=user_id)
     for group in user_groups:
         for ua in group.users_access:
             if str(ua.user_id.id) == str(user_id):
                 role = Role.objects.get(id=ua.role_id.id)
-                if role.role_name in global_admin_roles:
+                if role.role_name in GLOBAL_ADMIN_ROLE_NAMES:
                     return True
 
     # 2. Permiso normal por grupo
@@ -95,6 +95,37 @@ def user_has_permission(user_id: str, group_id: str, module: str, action: str) -
         return False
     role = Role.objects.get(id=user_access.role_id.id)
     return role.permissions.get(module, {}).get(action, False)
+
+
+def is_superadmin(user_id: str) -> bool:
+    """Returns True if user is in any group with a role named in GLOBAL_ADMIN_ROLE_NAMES."""
+    user_groups = Group.objects(users_access__user_id=user_id)
+    for group in user_groups:
+        for ua in group.users_access:
+            if str(ua.user_id.id) == str(user_id):
+                role_obj = Role.objects(id=ua.role_id.id).first()
+                if role_obj and role_obj.role_name in GLOBAL_ADMIN_ROLE_NAMES:
+                    return True
+    return False
+
+
+def user_is_group_admin(user_id: str, group_id: str) -> bool:
+    """Returns True if the user has role 'admin' in the specified group."""
+    try:
+        group = Group.objects.get(id=group_id)
+    except Exception:
+        return False
+    for ua in group.users_access:
+        if str(ua.user_id.id) == str(user_id):
+            role_obj = Role.objects(id=ua.role_id.id).first()
+            if role_obj and role_obj.role_name == 'admin':
+                return True
+    return False
+
+
+def can_assign_superadmin(assigner_user_id: str) -> bool:
+    """Only superadmins can assign the superadmin role."""
+    return is_superadmin(assigner_user_id)
 
 def get_jwks():
     jwks_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"

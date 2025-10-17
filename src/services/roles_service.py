@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from acb_orm.collections.roles import Role
 from acb_orm.schemas.roles_schema import RolesCreate, RolesRead, RolesUpdate
 from mongoengine import DoesNotExist
-from auth.access_utils import serialize_log
+from auth.access_utils import serialize_log, is_superadmin
 from .base_service import BaseService
 
 class RoleService(
@@ -41,7 +41,19 @@ class RoleService(
             raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
     def get_all(self, filters: Optional[dict] = None) -> List[RolesRead]:
+        # If caller passes a user_id via filters, respect it for visibility of 'superadmin'
+        user_id = None
+        if filters and 'user_id' in filters:
+            user_id = filters.pop('user_id')
+
         objs = Role.objects(**(filters or {}))
-        return [self.read_schema.model_validate(self._serialize_document(obj)) for obj in objs]
+
+        result = []
+        for obj in objs:
+            if obj.role_name == 'superadmin' and not (user_id and is_superadmin(user_id)):
+                # skip superadmin role for non-superadmin users
+                continue
+            result.append(self.read_schema.model_validate(self._serialize_document(obj)))
+        return result
 
     # Métodos create, update y delete ya están cubiertos por BaseService

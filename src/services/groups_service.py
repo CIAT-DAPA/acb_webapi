@@ -7,7 +7,8 @@ from acb_orm.auxiliaries.user_access import UserAccess
 from acb_orm.schemas.groups_schema import GroupsCreate, GroupsRead, GroupsUpdate
 from acb_orm.schemas.log_schema import LogUpdate
 from mongoengine import DoesNotExist
-from auth.access_utils import serialize_log
+from auth.access_utils import serialize_log, user_has_permission, is_superadmin, user_is_group_admin
+from constants.permissions import MODULE_ACCESS_CONTROL, ACTION_CREATE, ACTION_UPDATE, ACTION_DELETE
 from .base_service import BaseService
 
 class GroupsService(
@@ -37,6 +38,22 @@ class GroupsService(
 
     def __init__(self):
         super().__init__(Group, GroupsRead)
+
+    def create(self, obj_in: GroupsCreate, user_id: Optional[str] = None, module: Optional[str] = None) -> GroupsRead:
+        """Only superadmin can create groups."""
+        if not (user_id and is_superadmin(user_id)):
+            raise HTTPException(status_code=403, detail="Only superadmins can create groups")
+        # call base create but pass module for consistency
+        return super().create(obj_in, user_id, module="group_management")
+
+    def update(self, id: str, obj_in: GroupsUpdate, user_id: Optional[str] = None, module: Optional[str] = None) -> GroupsRead:
+        """Allow update if superadmin or group admin or has access_control.u permission."""
+        if not user_id:
+            raise HTTPException(status_code=403, detail="User id required for update")
+        if is_superadmin(user_id) or user_has_permission(user_id, id, MODULE_ACCESS_CONTROL, ACTION_UPDATE) or user_is_group_admin(user_id, id):
+            # use base update to handle log management
+            return super().update(id, obj_in, user_id, module="group_management")
+        raise HTTPException(status_code=403, detail="Not authorized to update this group")
 
     def get_by_name(self, name: str) -> List[GroupsRead]:
         objs = Group.objects(group_name__icontains=name)
@@ -93,14 +110,28 @@ class GroupsService(
         Adds a user with a role to the specified group.
         If the user already exists in the group, raises an error.
         """
+        # Authorization: only superadmin or group admin or user with create permission can add
+        if not (updater_user_id and (is_superadmin(updater_user_id) or user_has_permission(updater_user_id, group_id, MODULE_ACCESS_CONTROL, ACTION_CREATE) or user_is_group_admin(updater_user_id, group_id))):
+            raise HTTPException(status_code=403, detail="Not authorized to add users to this group")
+
         try:
             group = Group.objects.get(id=group_id)
         except Group.DoesNotExist:
             raise HTTPException(status_code=404, detail="Group not found")
 
+        # check role exists
+        role_obj = Role.objects(id=role_id).first()
+        if not role_obj:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        # prevent assigning superadmin by non-superadmin
+        if role_obj.role_name in [r for r in ["superadmin"]] and not is_superadmin(updater_user_id):
+            raise HTTPException(status_code=403, detail="Only superadmin can assign superadmin role")
+
         if any(str(ua.user_id.id) == str(user_id) for ua in group.users_access):
             raise HTTPException(status_code=400, detail="User already belongs to the group")
-        user_access = UserAccess(user_id=ObjectId(user_id), role_id=ObjectId(role_id))
+
+        user_access = UserAccess(user_id=ObjectId(user_id), role_id=role_obj)
         group.users_access.append(user_access)
         self._update_group_log(group, updater_user_id)
         group.save()
@@ -111,6 +142,10 @@ class GroupsService(
         Removes a user from the specified group.
         If the user is not in the group, raises an error.
         """
+        # Authorization: only superadmin or group admin or user with delete permission can remove
+        if not (updater_user_id and (is_superadmin(updater_user_id) or user_has_permission(updater_user_id, group_id, MODULE_ACCESS_CONTROL, ACTION_DELETE) or user_is_group_admin(updater_user_id, group_id))):
+            raise HTTPException(status_code=403, detail="Not authorized to remove users from this group")
+
         group = Group.objects.get(id=group_id)
         original_count = len(group.users_access)
         group.users_access = [ua for ua in group.users_access if str(ua.user_id.id) != str(user_id)]
@@ -125,6 +160,10 @@ class GroupsService(
         Updates a user's role in the specified group.
         If the user is not in the group, raises an error.
         """
+        # Authorization: only superadmin or group admin or user with update permission can change roles
+        if not (updater_user_id and (is_superadmin(updater_user_id) or user_has_permission(updater_user_id, group_id, MODULE_ACCESS_CONTROL, ACTION_UPDATE) or user_is_group_admin(updater_user_id, group_id))):
+            raise HTTPException(status_code=403, detail="Not authorized to change roles in this group")
+
         try:
             group = Group.objects.get(id=group_id)
         except Group.DoesNotExist:
@@ -134,6 +173,10 @@ class GroupsService(
             new_role = Role.objects.get(id=new_role_id)
         except Role.DoesNotExist:
             raise HTTPException(status_code=404, detail="Role not found")
+
+        # prevent assigning superadmin by non-superadmin
+        if new_role.role_name == 'superadmin' and not is_superadmin(updater_user_id):
+            raise HTTPException(status_code=403, detail="Only superadmin can assign superadmin role")
 
         updated = False
         for ua in group.users_access:
