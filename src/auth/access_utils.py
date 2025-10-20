@@ -55,7 +55,7 @@ def get_user_roles_by_group_complet(user_id: str) -> dict:
                 "group_name": group.group_name,
                 "role": {
                     "id": str(role_obj.id) if role_obj else None,
-                    "name": role_obj.role_name if role_obj else None,
+                    "role_name": role_obj.role_name if role_obj else None,
                     "permissions": role_obj.permissions if role_obj else {}
                 }
             })
@@ -108,6 +108,26 @@ def is_superadmin(user_id: str) -> bool:
                     return True
     return False
 
+def get_superadmins() -> List[User]:
+    """Returns a list of User objects who are superadmins."""
+    superadmin_users = set()
+    try:
+        superadmin_roles = Role.objects(role_name__in=GLOBAL_ADMIN_ROLE_NAMES)
+        superadmin_role_ids = [str(role.id) for role in superadmin_roles]
+
+        groups_with_superadmin_roles = Group.objects(users_access__role_id__in=superadmin_role_ids)
+
+        for group in groups_with_superadmin_roles:
+            for ua in group.users_access:
+                if str(ua.role_id.id) in superadmin_role_ids:
+                    user_obj = User.objects(id=ua.user_id.id).first()
+                    if user_obj:
+                        superadmin_users.add(user_obj)
+    except Exception as e:
+        #logger.error(f"Error retrieving superadmins: {e}")
+        print(f"Error retrieving superadmins: {e}")
+        pass
+    return list(superadmin_users)
 
 def user_is_group_admin(user_id: str, group_id: str) -> bool:
     """Returns True if the user has role 'admin' in the specified group."""
@@ -120,6 +140,26 @@ def user_is_group_admin(user_id: str, group_id: str) -> bool:
             role_obj = Role.objects(id=ua.role_id.id).first()
             if role_obj and role_obj.role_name == 'admin':
                 return True
+    return False
+
+
+def is_admin(user_id: str) -> bool:
+    """Returns True if the user has a role named 'admin' in any group.
+
+    We consider a user an admin if in any group the user's assigned role has
+    the name 'admin'. This is used to allow admins to list and manage users
+    (except superadmins).
+    """
+    try:
+        user_groups = Group.objects(users_access__user_id=user_id)
+    except Exception:
+        return False
+    for group in user_groups:
+        for ua in group.users_access:
+            if str(ua.user_id.id) == str(user_id):
+                role_obj = Role.objects(id=ua.role_id.id).first()
+                if role_obj and role_obj.role_name == 'admin':
+                    return True
     return False
 
 
@@ -178,7 +218,8 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
             "id": str(user_obj.id),
             "is_active": user_obj.is_active,
             "log": serialize_log(user_obj.log),
-            "groups": groups_info
+            "groups": groups_info,
+            "is_superadmin": is_superadmin(str(user_obj.id))
         }
         return payload
 

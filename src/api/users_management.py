@@ -3,6 +3,7 @@ from typing import List, Optional
 from services.users_service import UsersService
 from acb_orm.schemas.users_schema import UsersCreate, UsersUpdate, UsersRead
 from auth.access_utils import get_current_user
+from auth.access_utils import is_superadmin, is_admin
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 router = APIRouter(prefix="/users", tags=["User Management"])
@@ -44,12 +45,10 @@ def get_all_users(
     """
     current_user = get_current_user(credentials)
     
-    if active_only is True:
-        return users_service.get_active_users()
-    elif active_only is False:
-        return users_service.get_inactive_users()
-    else:
-        return users_service.get_all()
+    caller_user = get_current_user(credentials)
+    caller_id = caller_user["user_db"]["id"]
+    # Delegate permission logic to service
+    return users_service.get_all_for_caller(caller_id, active_only)
 
 @router.get("/ext-id/{ext_id}", response_model=UsersRead)
 def get_user_by_ext_id(
@@ -60,10 +59,21 @@ def get_user_by_ext_id(
     Returns a user by their external ID (Keycloak sub).
     """
     current_user = get_current_user(credentials)
+    caller_id = current_user["user_db"]["id"]
     user = users_service.get_by_ext_id(ext_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return user
+    # Visibility: allow if caller is superadmin, admin (but not if target is superadmin), or the user themself
+    if str(user.id) == str(caller_id):
+        return user
+    if is_superadmin(caller_id):
+        return user
+    if is_admin(caller_id):
+        # admins cannot view superadmins
+        if is_superadmin(str(user.id)):
+            raise HTTPException(status_code=404, detail="User not found")
+        return user
+    raise HTTPException(status_code=403, detail="Not authorized to view this user")
 
 @router.get("/name/{name}", response_model=List[UsersRead])
 def get_users_by_name(
@@ -74,7 +84,9 @@ def get_users_by_name(
     Returns users whose first_name or last_name contains the given substring (case-insensitive).
     """
     current_user = get_current_user(credentials)
-    return users_service.get_by_name(name)
+    caller_id = current_user["user_db"]["id"]
+    # delegate permission & efficient filtering to service
+    return users_service.get_by_name_for_caller(name, caller_id)
 
 @router.put("/{user_id}/activate", response_model=UsersRead)
 def activate_user(
@@ -109,4 +121,16 @@ def get_user_by_id(
     Returns a user by its ID.
     """
     current_user = get_current_user(credentials)
-    return users_service.get_by_id(user_id)
+    caller_id = current_user["user_db"]["id"]
+    # allow if caller is the same user
+    if str(user_id) == str(caller_id):
+        return users_service.get_by_id(user_id)
+    # allow superadmin
+    if is_superadmin(caller_id):
+        return users_service.get_by_id(user_id)
+    # allow admin except when target is superadmin
+    if is_admin(caller_id):
+        if is_superadmin(user_id):
+            raise HTTPException(status_code=404, detail="User not found")
+        return users_service.get_by_id(user_id)
+    raise HTTPException(status_code=403, detail="Not authorized to view this user")
