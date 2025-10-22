@@ -6,7 +6,7 @@ from bson import ObjectId
 from acb_orm.schemas.log_schema import LogUpdate, LogCreate
 
 
-from auth.access_utils import get_user_groups, user_has_permission
+from auth.access_utils import get_user_groups, user_has_permission, is_superadmin
 from tools.logger import logger
 from tools.utils import parse_object_ids
 from fastapi import HTTPException
@@ -35,6 +35,8 @@ class BaseService(Generic[ModelType, CreateSchemaType, ReadSchemaType, UpdateSch
         :return: List of serialized resources
         """
         try:
+            if is_superadmin(user_id):
+                return self.get_all(filters)
             user_groups = get_user_groups(user_id)
             public = self.model.objects(access_config__access_type="public", **(filters or {}))
             restricted = self.model.objects(access_config__access_type="restricted", access_config__allowed_groups__in=user_groups, **(filters or {}))
