@@ -3,6 +3,7 @@ from bson import ObjectId
 from fastapi import HTTPException
 from acb_orm.collections.groups import Group
 from acb_orm.collections.roles import Role
+from acb_orm.collections.users import User
 from acb_orm.auxiliaries.user_access import UserAccess
 from acb_orm.schemas.groups_schema import GroupsCreate, GroupsRead, GroupsUpdate
 from acb_orm.schemas.log_schema import LogUpdate
@@ -59,31 +60,109 @@ class GroupsService(
         objs = Group.objects(group_name__icontains=name)
         return [self.read_schema.model_validate(self._serialize_document(obj)) for obj in objs]
 
-    def get_by_id(self, id: str) -> GroupsRead:
+    def _enrich_groups_with_user_and_role_names(self, groups: List[Group]) -> List[dict]:
+        """
+        Returns a list of serialized group dicts where each users_access entry is enriched with
+        user_first_name, user_last_name and role_name. Does not modify the DB objects.
+        """
+        # Gather ids
+        user_ids = set()
+        role_ids = set()
+        for g in groups:
+            if hasattr(g, 'users_access') and g.users_access:
+                for ua in g.users_access:
+                    try:
+                        if ua.user_id:
+                            user_ids.add(str(ua.user_id.id))
+                    except Exception:
+                        pass
+                    try:
+                        if ua.role_id:
+                            role_ids.add(str(ua.role_id.id))
+                    except Exception:
+                        pass
+
+        # Bulk fetch users and roles
+        users_map = {}
+        roles_map = {}
+        if user_ids:
+            users = User.objects(id__in=[ObjectId(u) for u in user_ids]).only('first_name', 'last_name')
+            for u in users:
+                users_map[str(u.id)] = {
+                    'first_name': getattr(u, 'first_name', None),
+                    'last_name': getattr(u, 'last_name', None)
+                }
+        if role_ids:
+            roles = Role.objects(id__in=[ObjectId(r) for r in role_ids]).only('role_name')
+            for r in roles:
+                roles_map[str(r.id)] = getattr(r, 'role_name', None)
+
+        # Build serialized enriched groups
+        result = []
+        for g in groups:
+            base = self._serialize_document(g)
+            enriched_users = []
+            for ua in g.users_access if hasattr(g, 'users_access') and g.users_access else []:
+                uid = None
+                rid = None
+                try:
+                    uid = str(ua.user_id.id) if ua.user_id else None
+                except Exception:
+                    uid = None
+                try:
+                    rid = str(ua.role_id.id) if ua.role_id else None
+                except Exception:
+                    rid = None
+                user_info = users_map.get(uid, {}) if uid else {}
+                role_name = roles_map.get(rid) if rid else None
+                enriched_users.append({
+                    'user_id': uid,
+                    'role_id': rid,
+                    'user_first_name': user_info.get('first_name'),
+                    'user_last_name': user_info.get('last_name'),
+                    'role_name': role_name
+                })
+            base['users_access'] = enriched_users
+            result.append(base)
+        return result
+
+    def get_by_id(self, id: str, include_users: bool = False) -> GroupsRead:
         try:
             obj = Group.objects.get(id=id)
+            if include_users:
+                enriched = self._enrich_groups_with_user_and_role_names([obj])
+                return self.read_schema.model_validate(enriched[0])
             return self.read_schema.model_validate(self._serialize_document(obj))
         except DoesNotExist:
             raise HTTPException(status_code=404, detail="Group not found")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
-    def get_all(self, filters: Optional[dict] = None) -> List[GroupsRead]:
-        objs = Group.objects(**(filters or {}))
+    def get_all(self, filters: Optional[dict] = None, include_users: bool = False) -> List[GroupsRead]:
+        objs = list(Group.objects(**(filters or {})))
+        if include_users:
+            enriched = self._enrich_groups_with_user_and_role_names(objs)
+            return [self.read_schema.model_validate(d) for d in enriched]
         return [self.read_schema.model_validate(self._serialize_document(obj)) for obj in objs]
     
-    def get_groups_by_user_id(self, user_id: str) -> List[GroupsRead]:
+    def get_groups_by_user_id(self, user_id: str, include_users: bool = False) -> List[GroupsRead]:
         """
         Returns all groups where the given user_id is present in users_access.
         """
-        objs = Group.objects(users_access__user_id=ObjectId(user_id))
+        objs = list(Group.objects(users_access__user_id=ObjectId(user_id)))
+        if include_users:
+            enriched = self._enrich_groups_with_user_and_role_names(objs)
+            return [self.read_schema.model_validate(d) for d in enriched]
         return [self.read_schema.model_validate(self._serialize_document(obj)) for obj in objs]
     
-    def get_groups_by_country(self, country_code: str) -> List[GroupsRead]:
+    def get_groups_by_country(self, country_code: str, include_users: bool = False) -> List[GroupsRead]:
         """
         Returns all groups whose 'country' field matches the provided ISO 2 code (case-insensitive).
         """
-        objs = Group.objects(country__iexact=country_code)
+        objs = list(Group.objects(country__iexact=country_code))
+        if include_users:
+            enriched = self._enrich_groups_with_user_and_role_names(objs)
+            return [self.read_schema.model_validate(d) for d in enriched]
         return [self.read_schema.model_validate(self._serialize_document(obj)) for obj in objs]
 
     def _update_group_log(self, group: Group, user_id: Optional[str] = None) -> None:

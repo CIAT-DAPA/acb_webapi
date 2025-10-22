@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import List, Optional
 from services.groups_service import GroupsService
 from acb_orm.schemas.groups_schema import GroupsRead, GroupsCreate, GroupsUpdate
@@ -9,40 +9,42 @@ router = APIRouter(prefix="/groups", tags=["Groups"])
 groups_service = GroupsService()
 
 @router.get("/", response_model=List[GroupsRead])
-def list_groups(user=Depends(get_current_user)):
+def list_groups(user=Depends(get_current_user), include_users: Optional[bool] = Query(False)):
     user_id = user["user_db"]["id"]
     # superadmins can see all groups
     if is_superadmin(user_id):
-        return groups_service.get_all()
+        return groups_service.get_all(include_users=include_users)
     # otherwise return only groups where the user belongs
-    return groups_service.get_groups_by_user_id(user_id)
+    return groups_service.get_groups_by_user_id(user_id, include_users=include_users)
 
 @router.get("/by-country/{country_code}", response_model=List[GroupsRead])
-def get_groups_by_country(country_code: str, user=Depends(get_current_user)):
+def get_groups_by_country(country_code: str, user=Depends(get_current_user), include_users: Optional[bool] = Query(False)):
     user_id = user["user_db"]["id"]
     # show only groups in that country where the user is a member, unless superadmin
     if is_superadmin(user_id):
-        return groups_service.get_groups_by_country(country_code)
+        return groups_service.get_groups_by_country(country_code, include_users=include_users)
     # filter user's groups by country
-    user_groups = groups_service.get_groups_by_user_id(user_id)
+    user_groups = groups_service.get_groups_by_user_id(user_id, include_users=include_users)
     return [g for g in user_groups if g.country and g.country.lower() == country_code.lower()]
 
 @router.get("/by-user/{user_id}", response_model=List[GroupsRead])
-def get_groups_by_user(user_id: str, user=Depends(get_current_user)):
+def get_groups_by_user(user_id: str, user=Depends(get_current_user), include_users: Optional[bool] = Query(False)):
     requester_id = user["user_db"]["id"]
     if requester_id == user_id or is_superadmin(requester_id):
-        return groups_service.get_groups_by_user_id(user_id)
+        return groups_service.get_groups_by_user_id(user_id, include_users=include_users)
     raise HTTPException(status_code=403, detail="Not authorized to view other user's groups")
 
 @router.get("/{group_id}", response_model=GroupsRead)
-def get_group_by_id(group_id: str, user=Depends(get_current_user)):
+def get_group_by_id(group_id: str, user=Depends(get_current_user), include_users: Optional[bool] = Query(False)):
     user_id = user["user_db"]["id"]
     if is_superadmin(user_id):
-        return groups_service.get_by_id(group_id)
+        group = groups_service.get_by_id(group_id, include_users=include_users)
+        return group
     # check membership
-    groups = groups_service.get_groups_by_user_id(user_id)
+    groups = groups_service.get_groups_by_user_id(user_id, include_users=include_users)
     if any(str(g.id) == str(group_id) for g in groups):
-        return groups_service.get_by_id(group_id)
+        group = groups_service.get_by_id(group_id, include_users=include_users)
+        return group
     raise HTTPException(status_code=403, detail="Not authorized to view this group")
 
 @router.post("/", response_model=GroupsRead)
