@@ -6,10 +6,10 @@ from acb_orm.schemas.bulletins_version_schema import BulletinsVersionRead
 
 class TemplateWithCurrentVersion(BaseModel):
     """Response model for template master with its current version."""
-    template_master: TemplatesMasterRead
+    master: TemplatesMasterRead
     current_version: TemplatesVersionRead
 
 class BulletinWithCurrentVersion(BaseModel):
     """Response model for bulletin master with its current version."""
-    bulletin_master: BulletinsMasterRead
+    master: BulletinsMasterRead
     current_version: BulletinsVersionRead

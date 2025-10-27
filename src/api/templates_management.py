@@ -150,7 +150,7 @@ def get_current_version(
         raise HTTPException(status_code=500)
     
     return TemplateWithCurrentVersion(
-        template_master=template_master,
+        master=template_master,
         current_version=current_version
     )
 

@@ -127,7 +127,7 @@ def get_current_version(
         raise HTTPException(status_code=500, detail="Error retrieving current version")
     
     return BulletinWithCurrentVersion(
-        bulletin_master=bulletin_master,
+        master=bulletin_master,
         current_version=current_version
     )
 
