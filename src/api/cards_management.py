@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Path, Query
+from fastapi import APIRouter, HTTPException, Depends, Path, Query, Body
 from typing import List, Optional
 from services.cards_service import CardsService
 from acb_orm.schemas.cards_schema import CardsCreate, CardsUpdate, CardsRead
@@ -158,3 +158,38 @@ def get_card_by_id(
     if not cards:
         raise HTTPException(status_code=404, detail="Not found or no access")
     return cards[0]
+
+@router.post("/{card_id}/clone", response_model=CardsRead)
+def clone_card(
+    card_id: str = Path(..., description="ID of the card to clone"),
+    card_name: str = Body(None, description="New name for the cloned card"),
+    description: str = Body(None, description="New description for the cloned card"),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Clones an existing card with optional custom name and description.
+    """
+    user = get_current_user(credentials)
+    user_id = user["user_db"]["id"]
+
+    # Verificar acceso a la card
+    cards = cards_service.get_accessible_resources(user_id, filters={"id": card_id})
+    if not cards:
+        raise HTTPException(status_code=404, detail="Not found or no access")
+    
+    card = cards[0]
+    
+    # Verificar permisos de creación en los grupos de la card
+    allowed_groups = card.access_config.allowed_groups if hasattr(card.access_config, "allowed_groups") else []
+    for group_id in allowed_groups:
+        if not user_has_permission(user_id, str(group_id), "card_management", "c"):
+            raise HTTPException(status_code=403, detail=f"User does not have permission to clone cards in group {group_id}.")
+
+    # Clonar la card
+    cloned_card = cards_service.clone_card(
+        card,
+        user_id,
+        card_name=card_name,
+        description=description
+    )
+    return cloned_card

@@ -69,10 +69,12 @@ class BulletinsMasterService(
             logger.error(f"Error in get_current_version_id: {e}")
             raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
-    def clone_master_with_version(self, bulletin_master: BulletinsMasterRead, user_id: str, bulletin_name: Optional[str] = None):
+    def clone_master_with_version(self, bulletin_master: BulletinsMasterRead, user_id: str, bulletin_name: Optional[str] = None, description: Optional[str] = None):
         master_data = bulletin_master.model_dump()
         master_data.pop("id", None)
         master_data["bulletin_name"] = bulletin_name or master_data["bulletin_name"] + " (clon)"
+        if description:
+            master_data["description"] = description
         master_data["current_version_id"] = None
 
         new_master = self.create(BulletinsMasterCreate(**master_data), user_id)

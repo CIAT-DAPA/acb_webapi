@@ -57,3 +57,16 @@ class CardsService(
         if not obj:
             raise HTTPException(status_code=404, detail="Card not found")
         return self.read_schema.model_validate(self._serialize_document(obj))
+
+    def clone_card(self, card: CardsRead, user_id: str, card_name: Optional[str] = None, description: Optional[str] = None) -> CardsRead:
+        """
+        Clones a card with optional custom name and description.
+        """
+        card_data = card.model_dump()
+        card_data.pop("id", None)
+        card_data["card_name"] = card_name or card_data["card_name"] + " (clon)"
+        if description:
+            card_data["description"] = description
+
+        new_card = self.create(CardsCreate(**card_data), user_id)
+        return new_card
