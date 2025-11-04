@@ -1,65 +1,47 @@
-name: Deploy Bulletin Builder Api
+name: RELEASE api
 
 on:
   push:
     branches: [ "stage" ]
     tags:
-    - 'v*'
-
+      - 'v*'
 
 permissions:
   contents: read
 
 jobs:
 
-# ------- START Api PROCCESS -------- #
+# ------- START API PROCCESS -------- #
 
-  TestApi:
+  TestAPI:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v3
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Create environment and install dependencies
         run: |
           python -m venv env
           source env/bin/activate
+          cd src
           pip install -r requirements.txt
-          pip install pytest
-          pip install -e .
-          pip install mongomock
 
-      - name: Set up MongoDB
-        uses: supercharge/mongodb-github-action@1.8.0
-        with:
-          mongodb-version: '8.0'
-          mongodb-db: 'test_db'
-          mongodb-username: 'test_user'
-          mongodb-password: 'test_password'
-
-      - name: Run Tests with pytest
-        env:
-          DATABASE_URI: "mongodb://test_user:test_password@localhost:27017/test_db"
-        run: |
-          source env/bin/activate
-          PYTHONPATH=$PYTHONPATH:./src pytest tests/
-
-# ------- END Api PROCCESS -------- #    
+# ------- END API PROCCESS -------- #
 
 # ------- START MERGE PROCCESS -------- #
 
-  MergeMainApi:
-    needs: [TestApi]
+  MergeMainAPI:
+    needs: [TestAPI]
     name: Merge Stage with Main
     permissions: write-all
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@master
+      - uses: actions/checkout@v3
 
       - name: Merge stage -> main
         uses: devmasx/merge-branch@master
@@ -67,79 +49,63 @@ jobs:
           type: now
           head_to_merge: ${{ github.ref }}
           target_branch: main
-          github_token: ${{ github.token }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
 # ------- END MERGE PROCCESS -------- #
 
 # ------- START RELEASE PROCCESS -------- #
 
   PostRelease:
-    needs: MergeMainApi
+    needs: MergeMainAPI
     name: Create Release
     runs-on: ubuntu-latest
     permissions: write-all
     steps:
-    - uses: actions/checkout@v3
-      with:
-        fetch-depth: '0'
-    # API Zip
-    - name: Zip artifact for deployment
-      run: zip releaseApi.zip ./src/* -r
-    # Upload Artifacts
-    - name: Upload Api artifact for deployment job
-      uses: actions/upload-artifact@v4
-      with:
-        name: Api
-        path: releaseApi.zip
-    # Generate Tagname
-    - name: Generate Tagname for release
-      id: taggerDryRun
-      uses: anothrNick/github-tag-action@1.61.0
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        WITH_V: true
-        DRY_RUN: true
-        DEFAULT_BUMP: patch
-        RELEASE_BRANCHES : stage,main
-        BRANCH_HISTORY: last
-    # Create release
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-      with:
-        tag_name: ${{ steps.taggerDryRun.outputs.new_tag }}
-        release_name: Release ${{ steps.taggerDryRun.outputs.new_tag }}
-        #body_path: ./body.md
-        body: ${{ github.event.head_commit.message }}
-        draft: false
-        prerelease: false
-    # Upload Assets to release
-    - name: Upload Release Asset Api
-      id: upload-Api-release-asset 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-        asset_path: ./releaseApi.zip
-        asset_name: releaseApi.zip
-        asset_content_type: application/zip
-    # update version pyproject.toml
-    - name: Checkout code
-      uses: actions/checkout@v3
-      with:
-        ref: main
-    - name: Update version in pyproject.toml
-      run: |
-        pip install toml
-        python -c "import toml; f = open('pyproject.toml', 'r'); data = toml.load(f); f.close(); data['project']['version'] = '${{ steps.taggerDryRun.outputs.new_tag }}'; f = open('pyproject.toml', 'w'); toml.dump(data, f); f.close()"
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Commit changes
-      uses: stefanzweifel/git-auto-commit-action@v4
-      with:
-        commit_message: "Update version to ${{ steps.taggerDryRun.outputs.new_tag }}"
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: '0'
+
+      - name: Zip artifact for deployment
+        run: zip releaseAPI.zip ./src/* -r
+
+      - name: Upload API artifact for deployment job
+        uses: actions/upload-artifact@v4
+        with:
+          name: API
+          path: releaseAPI.zip
+
+      - name: Generate Tagname for release
+        id: taggerDryRun
+        uses: anothrNick/github-tag-action@1.61.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WITH_V: true
+          DRY_RUN: true
+          DEFAULT_BUMP: patch
+          RELEASE_BRANCHES: stage,main
+          BRANCH_HISTORY: last
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.taggerDryRun.outputs.new_tag }}
+          release_name: Release ${{ steps.taggerDryRun.outputs.new_tag }}
+          body: ${{ github.event.head_commit.message }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset API
+        id: upload-api-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./releaseAPI.zip
+          asset_name: releaseAPI.zip
+          asset_content_type: application/zip
 
 # ------- END RELEASE PROCCESS -------- #
