@@ -16,6 +16,7 @@ from api.visual_resources_management import router as visual_resources_router
 from api.cards_management import router as cards_router
 from api.users_management import router as users_router
 from api.meta_management import router as meta_router
+from api.root_redirect import router as root_redirect_router
 
 app = FastAPI(
     title="Bulletin Builder API"
@@ -37,11 +38,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/", include_in_schema=False )
-def read_root():
-    return {"message": "Bulletin Builder API is running!"}
-
-
 @app.exception_handler(ServerSelectionTimeoutError)
 async def db_connection_error_handler(request: Request, exc: ServerSelectionTimeoutError):
     return JSONResponse(
@@ -55,6 +51,8 @@ app.include_router(auth_router)
 app.include_router(get_client_token_router)
 app.include_router(validate_token_router)
 
+# Root Redirect
+app.include_router(root_redirect_router)
 
 # Templates Master
 app.include_router(templates_master_router)
