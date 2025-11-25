@@ -131,6 +131,46 @@ def get_current_version(
         current_version=current_version
     )
 
+
+@router.get("/{bulletin_id}/current-version-published", response_model=BulletinWithCurrentVersion)
+def get_current_version_published(
+    bulletin_id: str = Path(..., description="ID del boletín"),
+):
+    """
+    Public endpoint that returns the bulletin master and its current version 
+    ONLY if the bulletin status is PUBLISHED. No authentication required.
+    Returns 404 if the bulletin doesn't exist or is not published.
+    """
+    
+    # Get bulletin master without authentication
+    bulletin_master = bulletins_master_service.get_by_id(id=bulletin_id)
+    if not bulletin_master:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+    
+    print("Bulletin master status:", bulletin_master.status)
+    
+    # Verify the bulletin is PUBLISHED (security check for public access)
+    if bulletin_master.status != StatusBulletin.PUBLISHED:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+    
+    # Get the current version
+    version_id = bulletins_master_service.get_current_version_id(bulletin_id)
+    if not version_id:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+    
+    try:
+        current_version = bulletins_version_service.read_schema.model_validate(
+            bulletins_version_service._serialize_document(version_id)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+    
+    return BulletinWithCurrentVersion(
+        master=bulletin_master,
+        current_version=current_version
+    )
+
+
 # --- CRUD and queries for bulletin versions ---
 
 @router.post("/versions", response_model=BulletinsVersionRead)
