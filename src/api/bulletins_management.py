@@ -1,19 +1,41 @@
 from fastapi import APIRouter, HTTPException, Depends, Path
-from typing import List
+from typing import List, Dict, Set
 from bson import ObjectId
 from services.bulletins_master_service import BulletinsMasterService
 from services.bulletins_version_service import BulletinsVersionService
+from services.cards_service import CardsService
 from acb_orm.schemas.bulletins_master_schema import BulletinsMasterCreate, BulletinsMasterUpdate, BulletinsMasterRead
 from acb_orm.schemas.bulletins_version_schema import BulletinsVersionRead, BulletinsVersionCreate, BulletinsVersionUpdate
+from acb_orm.schemas.cards_schema import CardsRead
 from acb_orm.enums.status_bulletin import StatusBulletin
 from auth.access_utils import get_current_user, user_has_permission
-from schemas.response_models import BulletinWithCurrentVersion
+from schemas.response_models import BulletinWithCurrentVersion, BulletinWithCurrentVersionPublic
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 router = APIRouter(prefix="/bulletins", tags=["Bulletin Management"])
 bulletins_master_service = BulletinsMasterService()
 bulletins_version_service = BulletinsVersionService()
+cards_service = CardsService()
 security = HTTPBearer()
+
+
+def extract_card_ids_from_data(data: dict) -> Set[str]:
+    """Recursively extract all cardId values from bulletin data."""
+    card_ids = set()
+    
+    sections = data.get("sections", [])
+    for section in sections:
+        blocks = section.get("blocks", [])
+        for block in blocks:
+            fields = block.get("fields", [])
+            for field in fields:
+                if field.get("type") == "card":
+                    values = field.get("value", [])
+                    for value_item in values:
+                        if isinstance(value_item, dict) and "cardId" in value_item:
+                            card_ids.add(value_item["cardId"])
+    
+    return card_ids
 
 
 # --- CRUD and queries for bulletin masters ---
@@ -132,13 +154,14 @@ def get_current_version(
     )
 
 
-@router.get("/{bulletin_id}/current-version-published", response_model=BulletinWithCurrentVersion)
+@router.get("/{bulletin_id}/current-version-published", response_model=BulletinWithCurrentVersionPublic)
 def get_current_version_published(
     bulletin_id: str = Path(..., description="ID del boletín"),
 ):
     """
     Public endpoint that returns the bulletin master and its current version 
     ONLY if the bulletin status is PUBLISHED. No authentication required.
+    Includes cards metadata for all cards referenced in the bulletin data.
     Returns 404 if the bulletin doesn't exist or is not published.
     """
     
@@ -146,8 +169,6 @@ def get_current_version_published(
     bulletin_master = bulletins_master_service.get_by_id(id=bulletin_id)
     if not bulletin_master:
         raise HTTPException(status_code=404, detail="Bulletin not found")
-    
-    print("Bulletin master status:", bulletin_master.status)
     
     # Verify the bulletin is PUBLISHED (security check for public access)
     if bulletin_master.status != StatusBulletin.PUBLISHED:
@@ -165,9 +186,28 @@ def get_current_version_published(
     except Exception as e:
         raise HTTPException(status_code=404, detail="Bulletin not found")
     
-    return BulletinWithCurrentVersion(
+    # Extract all card IDs from the bulletin data
+    card_ids = extract_card_ids_from_data(current_version.data)
+    
+    # Fetch all cards in bulk and create a dict indexed by card ID
+    cards_metadata: Dict[str, CardsRead] = {}
+    if card_ids:
+        try:
+            # Convert set to comma-separated string for get_by_ids
+            card_ids_str = ",".join(card_ids)
+            cards = cards_service.get_by_ids(card_ids_str)
+            
+            # Index cards by their ID
+            for card in cards:
+                cards_metadata[card.id] = card
+        except Exception as e:
+            # If cards fetch fails, continue without cards (graceful degradation)
+            pass
+    
+    return BulletinWithCurrentVersionPublic(
         master=bulletin_master,
-        current_version=current_version
+        current_version=current_version,
+        cards_metadata=cards_metadata
     )
 
 
