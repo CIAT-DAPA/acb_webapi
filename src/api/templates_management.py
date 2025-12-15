@@ -30,6 +30,19 @@ def create_template(
     user_id = user["user_db"]["id"]
     return service_template.create(template, user_id, 'template_management')
 
+@router.get("/slug_names", response_model=List[str], include_in_schema=False)
+def get_all_template_slug_names(
+        credentials: HTTPAuthorizationCredentials = Depends(security)
+    ):
+    """
+    Returns a list of all template slug names.
+    """
+    user = get_current_user(credentials)
+    user_id = user["user_db"]["id"]
+    templates = service_template.get_all()
+    slug_names = [template.name_machine for template in templates if hasattr(template, 'name_machine') and template.name_machine is not None]
+    return slug_names
+
 @router.put("/{template_id}", response_model=TemplatesMasterRead)
 def update_template(
     template_id: str = Path(..., description="Unique identifier of the template master document to update."),
