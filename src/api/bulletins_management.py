@@ -106,6 +106,19 @@ def get_bulletins_by_status(
     filters = {"status": status}
     return bulletins_master_service.get_accessible_resources(user_id, filters)
 
+@router.get("/slug_name", response_model=list[str], include_in_schema=False)
+def get_all_bulletin_slug_names(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Returns a list of all bulletin slug names.
+    """
+    user = get_current_user(credentials)
+    user_id = user["user_db"]["id"]
+    bulletins = bulletins_master_service.get_all()
+    slug_names = [bulletin.name_machine for bulletin in bulletins if hasattr(bulletin, 'name_machine') and bulletin.name_machine is not None]
+    return slug_names
+
 @router.get("/{bulletin_id}", response_model=BulletinsMasterRead)
 def get_bulletin_by_id(
     bulletin_id: str = Path(..., description="Bulletin ID"),
@@ -210,6 +223,65 @@ def get_current_version_published(
         cards_metadata=cards_metadata
     )
 
+@router.get("/by-slug/{bulletinSlug}", response_model=BulletinWithCurrentVersionPublic)
+def get_current_version_published_by_slug(
+    bulletinSlug: str = Path(..., description="Slug del boletín"),
+):
+    """
+    Public endpoint that returns the bulletin master and its current version 
+    ONLY if the bulletin status is PUBLISHED. No authentication required.
+    Includes cards metadata for all cards referenced in the bulletin data.
+    Returns 404 if the bulletin doesn't exist or is not published.
+    """
+    
+    # Get bulletin master without authentication
+    bulletin_master = bulletins_master_service._get_by_field(field="name_machine", value=bulletinSlug)
+    if not bulletin_master:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+    
+    bulletin_master = bulletin_master[0]
+    
+    # Verify the bulletin is PUBLISHED (security check for public access)
+    if bulletin_master.status != StatusBulletin.PUBLISHED:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+    
+    bulletin_id = str(bulletin_master.id)
+    
+    # Get the current version
+    version_id = bulletins_master_service.get_current_version_id(bulletin_id)
+    if not version_id:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+    
+    try:
+        current_version = bulletins_version_service.read_schema.model_validate(
+            bulletins_version_service._serialize_document(version_id)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+    
+    # Extract all card IDs from the bulletin data
+    card_ids = extract_card_ids_from_data(current_version.data)
+    
+    # Fetch all cards in bulk and create a dict indexed by card ID
+    cards_metadata: Dict[str, CardsRead] = {}
+    if card_ids:
+        try:
+            # Convert set to comma-separated string for get_by_ids
+            card_ids_str = ",".join(card_ids)
+            cards = cards_service.get_by_ids(card_ids_str)
+            
+            # Index cards by their ID
+            for card in cards:
+                cards_metadata[card.id] = card
+        except Exception as e:
+            # If cards fetch fails, continue without cards (graceful degradation)
+            pass
+    
+    return BulletinWithCurrentVersionPublic(
+        master=bulletin_master,
+        current_version=current_version,
+        cards_metadata=cards_metadata
+    )
 
 # --- CRUD and queries for bulletin versions ---
 

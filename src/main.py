@@ -42,7 +42,7 @@ app.add_middleware(
 async def db_connection_error_handler(request: Request, exc: ServerSelectionTimeoutError):
     return JSONResponse(
         status_code=503,
-        content={"detail": "Error de conexión con la base de datos. Verifica si el servidor está en línea."},
+        content={"detail": "Database connection error."},
     )
 
 
