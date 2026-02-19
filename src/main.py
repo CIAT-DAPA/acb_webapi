@@ -12,6 +12,7 @@ from api.templates_management import router as templates_master_router
 from api.roles_management import router as roles_router
 from api.groups_management import router as groups_router
 from api.bulletins_management import router as bulletins_router
+from api.bulletin_reviews_management import router as bulletin_reviews_router
 from api.visual_resources_management import router as visual_resources_router
 from api.cards_management import router as cards_router
 from api.users_management import router as users_router
@@ -65,6 +66,7 @@ app.include_router(groups_router)
 
 # Bulletins
 app.include_router(bulletins_router)
+app.include_router(bulletin_reviews_router)
 
 # Visual Resources
 app.include_router(visual_resources_router)

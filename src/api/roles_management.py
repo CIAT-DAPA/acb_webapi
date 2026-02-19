@@ -4,6 +4,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from acb_orm.schemas.roles_schema import RolesCreate, RolesRead, RolesUpdate
 from services.roles_service import RoleService
 from auth.access_utils import get_current_user, is_superadmin
+from constants.permissions import GLOBAL_ADMIN_ROLE_NAMES
 
 router = APIRouter(prefix="/roles", tags=["Role Management"])
 service_role = RoleService()
@@ -18,6 +19,8 @@ def create_role(
     user_id = user["user_db"]["id"]
     if not is_superadmin(user_id):
         raise HTTPException(status_code=403, detail="Not authorized to create roles")
+    if role.role_name.lower() in GLOBAL_ADMIN_ROLE_NAMES:
+        raise HTTPException(status_code=400, detail=f"Cannot create role with reserved name '{role.role_name}'")
     return service_role.create(role, user_id)
 
 @router.get("/", response_model=List[RolesRead])
@@ -50,7 +53,7 @@ def get_roles_by_name(
     user_id = user["user_db"]["id"]
     roles = service_role.get_by_name(name)
     if not is_superadmin(user_id):
-        roles = [r for r in roles if getattr(r, 'role_name', None) != 'superadmin']
+        roles = [r for r in roles if getattr(r, 'role_name', None) not in GLOBAL_ADMIN_ROLE_NAMES]
     return roles
 
 @router.put("/{role_id}", response_model=RolesRead)
