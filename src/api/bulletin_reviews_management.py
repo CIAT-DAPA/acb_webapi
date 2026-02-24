@@ -23,7 +23,7 @@ security = HTTPBearer()
 def can_manage_review(user_id: str, bulletin_id: str) -> bool:
     """
     Check if user can manage the review (approve/reject/open).
-    Returns True if user is the assigned reviewer OR admin of the group.
+    Returns True if user is the assigned reviewer OR admin of the group OR any reviewer of the bulletin's groups.
     """
     bulletin = bulletins_master_service.get_by_id(bulletin_id)
     if not bulletin:
@@ -39,13 +39,21 @@ def can_manage_review(user_id: str, bulletin_id: str) -> bool:
     if is_superadmin(user_id):
         return True
     
-    # Check if is admin of the group
+    # Get bulletin groups
     allowed_groups = bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else []
-    for group_id in allowed_groups:
-        if user_is_group_admin(user_id, str(group_id)):
+    bulletin_groups = [str(g.id) if hasattr(g, 'id') else str(g) for g in allowed_groups]
+    
+    # Check if is admin of any group
+    for group_id in bulletin_groups:
+        if user_is_group_admin(user_id, group_id):
             return True
     
+    # Check if is reviewer of any group
+    if is_reviewer_for_bulletin(user_id, bulletin_groups):
+        return True
+    
     return False
+
 
 # --- WORKFLOW ENDPOINTS ---
 
@@ -176,7 +184,8 @@ def open_review(
 ):
     """
     Open bulletin for review (PENDING_REVIEW → REVIEW).
-    Can be done by assigned reviewer or admin.
+    Can be done by any reviewer of the bulletin's groups or admin.
+    If no reviewer is assigned, the user who opens it will be auto-assigned.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
@@ -195,7 +204,18 @@ def open_review(
     
     # Check permissions (reviewer or admin)
     if not can_manage_review(user_id, bulletin_id):
-        raise HTTPException(status_code=403, detail="Only assigned reviewer or admin can open review")
+        raise HTTPException(status_code=403, detail="Only reviewers or admins can open review")
+    
+    # Auto-assign reviewer if not assigned and user is a reviewer (not admin)
+    review = bulletin_reviews_service.get_review_by_bulletin(bulletin_id)
+    if not review or not review.reviewer_user_id:
+        # Check if user is a reviewer (not just admin/superadmin)
+        allowed_groups = bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else []
+        bulletin_groups = [str(g.id) if hasattr(g, 'id') else str(g) for g in allowed_groups]
+        
+        if is_reviewer_for_bulletin(user_id, bulletin_groups):
+            bulletin_reviews_service.assign_reviewer(bulletin_id, user_id, user_id)
+            logger.info(f"Auto-assigned reviewer {user_id} to bulletin {bulletin_id}")
     
     # Mark all editable comments as not editable (editor's window is closed)
     bulletin_reviews_service.mark_all_editable_not_editable(bulletin_id)
