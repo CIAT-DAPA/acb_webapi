@@ -80,13 +80,9 @@ def user_has_permission(user_id: str, group_id: str, module: str, action: str) -
     :return: True if allowed, False otherwise
     """
     # 1. Verificar si el usuario tiene el rol global (superadmin u otros definidos)
-    user_groups = Group.objects(users_access__user_id=user_id)
-    for group in user_groups:
-        for ua in group.users_access:
-            if str(ua.user_id.id) == str(user_id):
-                role = Role.objects.get(id=ua.role_id.id)
-                if role.role_name in GLOBAL_ADMIN_ROLE_NAMES:
-                    return True
+    is_super = is_superadmin(user_id)
+    if is_super:
+        return True
 
     # 2. Permiso normal por grupo
     group = Group.objects.get(id=group_id)
@@ -140,6 +136,44 @@ def user_is_group_admin(user_id: str, group_id: str) -> bool:
             role_obj = Role.objects(id=ua.role_id.id).first()
             if role_obj and role_obj.role_name == 'admin':
                 return True
+    return False
+
+
+def is_editor_for_bulletin(user_id: str, bulletin_groups: list) -> bool:
+    """Check if user has bulletins_composer.c permission in any of the bulletin's groups.
+    Does NOT consider superadmin/admin status - check those separately."""
+    for group_id in bulletin_groups:
+        try:
+            group = Group.objects.get(id=group_id)
+        except Exception:
+            continue
+        user_access = next((ua for ua in group.users_access if str(ua.user_id.id) == str(user_id)), None)
+        if not user_access:
+            continue
+        role = Role.objects(id=user_access.role_id.id).first()
+        if role and role.permissions.get("bulletins_composer", {}).get("c", False):
+            return True
+    return False
+
+
+def is_reviewer_for_bulletin(user_id: str, bulletin_groups: list) -> bool:
+    """Check if user has review.u but NOT bulletins_composer.c in any of the bulletin's groups (same role).
+    This distinguishes reviewers from editors. Does NOT consider superadmin/admin status."""
+    for group_id in bulletin_groups:
+        try:
+            group = Group.objects.get(id=group_id)
+        except Exception:
+            continue
+        user_access = next((ua for ua in group.users_access if str(ua.user_id.id) == str(user_id)), None)
+        if not user_access:
+            continue
+        role = Role.objects(id=user_access.role_id.id).first()
+        if not role:
+            continue
+        has_review_u = role.permissions.get("review", {}).get("u", False)
+        has_composer_c = role.permissions.get("bulletins_composer", {}).get("c", False)
+        if has_review_u and not has_composer_c:
+            return True
     return False
 
 

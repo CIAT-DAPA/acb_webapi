@@ -8,6 +8,7 @@ from acb_orm.schemas.bulletins_master_schema import BulletinsMasterCreate, Bulle
 from acb_orm.schemas.bulletins_version_schema import BulletinsVersionRead, BulletinsVersionCreate, BulletinsVersionUpdate
 from acb_orm.schemas.cards_schema import CardsRead
 from acb_orm.enums.status_bulletin import StatusBulletin
+from acb_orm.enums.outcome_cycle import OutcomeCycle
 from auth.access_utils import get_current_user, user_has_permission
 from schemas.response_models import BulletinWithCurrentVersion, BulletinWithCurrentVersionPublic
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -59,10 +60,51 @@ def update_bulletin(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    Updates a bulletin master document by its ID. Checks permissions and updates the log with user info.
+    Updates a bulletin master document by its ID. 
+    Note: Status changes must be done through workflow endpoints.
+    Editing in PENDING_REVIEW will revert to DRAFT automatically.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
+    
+    # Get current bulletin
+    current_bulletin = bulletins_master_service.get_by_id(bulletin_id)
+    if not current_bulletin:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+    
+    # Prohibit status changes through this endpoint
+    if bulletin.status is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Status changes must be done through workflow endpoints (/bulletins/reviews/*)"
+        )
+    
+    # Validate states where editing is not allowed
+    if current_bulletin.status in [StatusBulletin.REVIEW, StatusBulletin.PUBLISHED, StatusBulletin.ARCHIVED]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot edit bulletin in {current_bulletin.status.value} status"
+        )
+    
+    # If editing in PENDING_REVIEW, auto-revert to DRAFT
+    if current_bulletin.status == StatusBulletin.PENDING_REVIEW:
+        # Cancel the pending review cycle (mark as cancelled)
+        from services.bulletin_reviews_service import BulletinReviewsService
+        review_service = BulletinReviewsService()
+        review = review_service.get_review_by_bulletin(bulletin_id)
+        
+        if review and review.review_cycles:
+            last_cycle = review.review_cycles[-1]
+            if not last_cycle.outcome:  # Still in progress
+                last_cycle.outcome = OutcomeCycle.CANCELLED.value
+                review.save()
+        
+        # Change status to DRAFT
+        bulletin_copy = bulletin.model_copy()
+        bulletin_copy.status = StatusBulletin.DRAFT
+        return bulletins_master_service.update(bulletin_id, bulletin_copy, user_id, 'bulletins_composer')
+    
+    # Normal update for DRAFT or REJECTED
     return bulletins_master_service.update(bulletin_id, bulletin, user_id, 'bulletins_composer')
 
 @router.get("/", response_model=List[BulletinsMasterRead])
@@ -299,6 +341,10 @@ def create_bulletin_version(
     if not bulletins:
         raise HTTPException(status_code=404, detail="Not found or no access")
     bulletin_master = bulletins[0]
+
+    if bulletin_master.status in [StatusBulletin.REVIEW, StatusBulletin.PUBLISHED, StatusBulletin.ARCHIVED]:
+        raise HTTPException(status_code=403, detail="Bulletin in proccess of review, published or archived. Cannot create new version")
+    
     previous_version_id = getattr(bulletin_master, "current_version_id", None)
     version_data = version.model_dump()
     if previous_version_id:
@@ -307,9 +353,26 @@ def create_bulletin_version(
         version_data["version_num"] = previous_num + 1
     else:
         version_data["version_num"] = 1
+    
     version_obj = bulletins_version_service.create(BulletinsVersionCreate(**version_data), user_id)
     # Update the master with the new current_version_id
     update_data = BulletinsMasterUpdate(current_version_id=str(version_obj.id))
+
+    if bulletin_master.status == StatusBulletin.PENDING_REVIEW:
+        # Cancel the pending review cycle (mark as cancelled)
+        from services.bulletin_reviews_service import BulletinReviewsService
+        review_service = BulletinReviewsService()
+        review = review_service.get_review_by_bulletin(bulletin_master.id)
+        
+        if review and review.review_cycles:
+            last_cycle = review.review_cycles[-1]
+            if not last_cycle.outcome:  # Still in progress
+                last_cycle.outcome = OutcomeCycle.CANCELLED.value
+                review.save()
+        
+        # Change status to DRAFT
+        update_data.status = StatusBulletin.DRAFT
+        
     bulletins_master_service.update(version.bulletin_master_id, update_data, user_id)
     return version_obj
 
