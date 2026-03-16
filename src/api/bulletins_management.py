@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Path
+from fastapi import APIRouter, HTTPException, Depends, Path, Body
 from typing import List, Dict, Set
 from bson import ObjectId
 from services.bulletins_master_service import BulletinsMasterService
@@ -175,6 +175,37 @@ def get_bulletin_by_id(
     if not bulletins:
         raise HTTPException(status_code=404, detail="Not found or no access")
     return bulletins[0]
+
+@router.post("/{bulletin_id}/clone", response_model=BulletinsMasterRead)
+def clone_bulletin(
+    bulletin_id: str = Path(..., description="ID of the bulletin master to clone"),
+    bulletin_name: str = Body(None, description="New name for the cloned bulletin"),
+    description: str = Body(None, description="New description for the cloned bulletin"),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Clones an existing bulletin. If name/description are provided, clones the master and its current version.
+    """
+    user = get_current_user(credentials)
+    user_id = user["user_db"]["id"]
+
+    bulletins = bulletins_master_service.get_accessible_resources(user_id, filters={"id": bulletin_id})
+    if not bulletins:
+        raise HTTPException(status_code=404, detail="Not found or no access")
+
+    bulletin_master = bulletins[0]
+    allowed_groups = bulletin_master.access_config.allowed_groups if hasattr(bulletin_master.access_config, "allowed_groups") else []
+    for group_id in allowed_groups:
+        if not user_has_permission(user_id, str(group_id), "bulletins_composer", "c"):
+            raise HTTPException(status_code=403, detail=f"User does not have permission to clone bulletins in group {group_id}.")
+
+    cloned_master, cloned_version = bulletins_master_service.clone_master_with_version(
+        bulletin_master,
+        user_id,
+        bulletin_name=bulletin_name,
+        description=description
+    )
+    return cloned_master
 
 @router.get("/{bulletin_id}/current-version", response_model=BulletinWithCurrentVersion)
 def get_current_version(
