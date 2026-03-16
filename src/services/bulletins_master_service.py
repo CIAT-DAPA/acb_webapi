@@ -73,6 +73,7 @@ class BulletinsMasterService(
         master_data = bulletin_master.model_dump()
         master_data.pop("id", None)
         master_data["bulletin_name"] = bulletin_name or master_data["bulletin_name"] + " (clon)"
+        master_data["status"] = StatusBulletin.DRAFT
         if description:
             master_data["description"] = description
         master_data["current_version_id"] = None
