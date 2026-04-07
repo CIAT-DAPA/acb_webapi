@@ -29,6 +29,8 @@ class CardsService(
         if 'access_config' in data and isinstance(data['access_config'], dict):
             if 'allowed_groups' in data['access_config'] and isinstance(data['access_config']['allowed_groups'], list):
                 data['access_config']['allowed_groups'] = [str(g) if isinstance(g, ObjectId) else g for g in data['access_config']['allowed_groups']]
+        if 'parent_card_id' in data and isinstance(data['parent_card_id'], ObjectId):
+            data['parent_card_id'] = str(data['parent_card_id'])
         return data
 
     def __init__(self):
@@ -63,6 +65,7 @@ class CardsService(
         Clones a card with optional custom name and description.
         """
         card_data = card.model_dump()
+        card_data["parent_card_id"] = card.id
         card_data.pop("id", None)
         card_data["card_name"] = card_name or card_data["card_name"] + " (clon)"
         if description:
