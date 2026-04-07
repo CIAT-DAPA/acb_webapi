@@ -159,6 +159,20 @@ def get_card_by_id(
         raise HTTPException(status_code=404, detail="Not found or no access")
     return cards[0]
 
+@router.get("/by-tag/", response_model=List[CardsRead])
+def get_cards_by_tag(
+    tag: str = Query(..., description="A comma-separated list of tags to filter cards by those containing these tags"),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Returns cards by their tags if accessible to the user.
+    """
+    user = get_current_user(credentials)
+    user_id = user["user_db"]["id"]
+    tags = [t.strip().lower() for t in tag.split(",") if t.strip()]
+    cards = cards_service.get_accessible_resources(user_id, filters={"tags__in": tags})
+    return cards
+
 @router.post("/{card_id}/clone", response_model=CardsRead)
 def clone_card(
     card_id: str = Path(..., description="ID of the card to clone"),
