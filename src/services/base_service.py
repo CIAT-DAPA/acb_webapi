@@ -40,7 +40,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, ReadSchemaType, UpdateSch
             user_groups = get_user_groups(user_id)
             public = self.model.objects(access_config__access_type="public", **(filters or {}))
             restricted = self.model.objects(access_config__access_type="restricted", access_config__allowed_groups__in=user_groups, **(filters or {}))
-            all_objs =  public.union(restricted)
+            all_objs =  list(public) + list(restricted)
             return [self.read_schema.model_validate(self._serialize_document(obj)) for obj in all_objs]
         except Exception as e:
             logger.error(f"Error in get_accessible_resources: {e}")
