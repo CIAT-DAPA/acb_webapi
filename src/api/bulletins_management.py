@@ -307,15 +307,16 @@ def get_current_version_published_by_slug(
     Returns 404 if the bulletin doesn't exist or is not published.
     """
     
-    # Get bulletin master without authentication
-    bulletin_master = bulletins_master_service._get_by_field(field="name_machine", value=bulletinSlug)
-    if not bulletin_master:
+    # There may be duplicated slugs in historical data, so pick a published
+    # bulletin that also has a current_version_id.
+    bulletin_masters = bulletins_master_service.get_all(
+        filters={"name_machine": bulletinSlug, "status": StatusBulletin.PUBLISHED}
+    )
+    if not bulletin_masters:
         raise HTTPException(status_code=404, detail="Bulletin not found")
-    
-    bulletin_master = bulletin_master[0]
-    
-    # Verify the bulletin is PUBLISHED (security check for public access)
-    if bulletin_master.status != StatusBulletin.PUBLISHED:
+
+    bulletin_master = next((b for b in bulletin_masters if b.current_version_id), None)
+    if not bulletin_master:
         raise HTTPException(status_code=404, detail="Bulletin not found")
     
     bulletin_id = str(bulletin_master.id)
