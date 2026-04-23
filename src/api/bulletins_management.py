@@ -23,15 +23,35 @@ security = HTTPBearer()
 def extract_card_ids_from_data(data: dict) -> Set[str]:
     """Recursively extract all cardId values from bulletin data."""
     card_ids = set()
-    
-    sections = data.get("sections", [])
+
+    if not isinstance(data, dict):
+        return card_ids
+
+    sections = data.get("sections") or []
     for section in sections:
-        blocks = section.get("blocks", [])
+        if not isinstance(section, dict):
+            continue
+
+        blocks = section.get("blocks") or []
         for block in blocks:
-            fields = block.get("fields", [])
+            if not isinstance(block, dict):
+                continue
+
+            fields = block.get("fields") or []
             for field in fields:
+                if not isinstance(field, dict):
+                    continue
+
                 if field.get("type") == "card":
-                    values = field.get("value", [])
+                    raw_values = field.get("value")
+
+                    if isinstance(raw_values, list):
+                        values = raw_values
+                    elif isinstance(raw_values, dict):
+                        values = [raw_values]
+                    else:
+                        values = []
+
                     for value_item in values:
                         if isinstance(value_item, dict) and "cardId" in value_item:
                             card_ids.add(value_item["cardId"])
