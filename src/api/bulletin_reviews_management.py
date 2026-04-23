@@ -9,7 +9,8 @@ from acb_orm.schemas.comment_schema import CommentRead
 from schemas.bulletin_reviews_schema import CommentCreateRequest, CommentCreateResponse, CommentUpdateRequest
 from acb_orm.enums.outcome_cycle import OutcomeCycle
 from acb_orm.enums.status_bulletin import StatusBulletin
-from auth.access_utils import get_current_user, is_superadmin, user_is_group_admin, is_editor_for_bulletin, is_reviewer_for_bulletin
+from auth.access_utils import get_current_user, is_superadmin, user_is_group_admin, is_editor_for_bulletin, is_reviewer_for_bulletin, user_has_permission
+from constants.permissions import MODULE_REVIEW, ACTION_CREATE, ACTION_READ, ACTION_UPDATE, ACTION_DELETE
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from tools.logger import logger
 
@@ -52,6 +53,17 @@ def can_manage_review(user_id: str, bulletin_id: str) -> bool:
     if is_reviewer_for_bulletin(user_id, bulletin_groups):
         return True
     
+    return False
+
+
+def has_review_crud_for_bulletin(user_id: str, bulletin_groups: List[str]) -> bool:
+    """Return True if user has full CRUD in review module for at least one bulletin group."""
+    required_actions = [ACTION_CREATE, ACTION_READ, ACTION_UPDATE, ACTION_DELETE]
+
+    for group_id in bulletin_groups:
+        if all(user_has_permission(user_id, group_id, MODULE_REVIEW, action) for action in required_actions):
+            return True
+
     return False
 
 
@@ -369,7 +381,7 @@ def publish_direct(
 ):
     """
     Publish bulletin directly without review (DRAFT → PUBLISHED).
-    Admin only. For bulletins that don't need review.
+    Allowed for admins or users with full CRUD in review module.
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
@@ -386,23 +398,32 @@ def publish_direct(
             detail=f"Can only publish bulletins in DRAFT status. Current: {bulletin.status.value}"
         )
     
+    # Collect bulletin groups for permission checks
+    allowed_groups = bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else []
+    bulletin_groups = [str(g.id) if hasattr(g, 'id') else str(g) for g in allowed_groups]
+
     # Check if user is admin (superadmin or group admin)
     is_user_admin = is_superadmin(user_id)
     if not is_user_admin:
-        allowed_groups = bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else []
-        for group_id in allowed_groups:
-            if user_is_group_admin(user_id, str(group_id)):
+        for group_id in bulletin_groups:
+            if user_is_group_admin(user_id, group_id):
                 is_user_admin = True
                 break
-    
-    if not is_user_admin:
-        raise HTTPException(status_code=403, detail="Only admins can publish directly")
+
+    # Also allow users with full CRUD permissions in review module
+    has_review_crud = has_review_crud_for_bulletin(user_id, bulletin_groups)
+
+    if not is_user_admin and not has_review_crud:
+        raise HTTPException(
+            status_code=403,
+            detail="Only admins or users with review CRUD permissions can publish directly"
+        )
     
     # Change status to PUBLISHED
     update_data = BulletinsMasterUpdate(status=StatusBulletin.PUBLISHED)
     updated_bulletin = bulletins_master_service.update(bulletin_id, update_data, user_id)
     
-    logger.info(f"Bulletin {bulletin_id} published directly by admin {user_id}")
+    logger.info(f"Bulletin {bulletin_id} published directly by user {user_id}")
     return updated_bulletin
 
 @router.post("/{bulletin_id}/archive", response_model=BulletinsMasterRead)
