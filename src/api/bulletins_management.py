@@ -172,19 +172,17 @@ def get_bulletins_by_name(
 @router.get("/status/{status}", response_model=List[BulletinsMasterRead])
 def get_bulletins_by_status(
     status: str = Path(..., description=f"Template status. Possible options: {list(StatusBulletin._value2member_map_.keys())}"),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
     Returns bulletins by status, validating against allowed values.
+    Public endpoint: no authentication required.
     """
-    user = get_current_user(credentials)
-    user_id = user["user_db"]["id"]
     # Validate that the status is allowed
     if status not in StatusBulletin._value2member_map_:
         allowed = list(StatusBulletin._value2member_map_.keys())
         raise HTTPException(status_code=400, detail=f"Invalid status: {status}. Allowed: {allowed}")
     filters = {"status": status}
-    return bulletins_master_service.get_accessible_resources(user_id, filters)
+    return bulletins_master_service.get_all(filters)
 
 @router.get("/slug_name", response_model=list[str], include_in_schema=False)
 def get_all_bulletin_slug_names(
