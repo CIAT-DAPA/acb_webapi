@@ -3,6 +3,7 @@ from typing import List, Dict, Set
 from bson import ObjectId
 from services.bulletins_master_service import BulletinsMasterService
 from services.bulletins_version_service import BulletinsVersionService
+from services.templates_master_service import TemplatesMasterService
 from services.cards_service import CardsService
 from acb_orm.schemas.bulletins_master_schema import BulletinsMasterCreate, BulletinsMasterUpdate, BulletinsMasterRead
 from acb_orm.schemas.bulletins_version_schema import BulletinsVersionRead, BulletinsVersionCreate, BulletinsVersionUpdate
@@ -16,6 +17,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 router = APIRouter(prefix="/bulletins", tags=["Bulletin Management"])
 bulletins_master_service = BulletinsMasterService()
 bulletins_version_service = BulletinsVersionService()
+templates_master_service = TemplatesMasterService()
 cards_service = CardsService()
 security = HTTPBearer()
 
@@ -57,6 +59,22 @@ def extract_card_ids_from_data(data: dict) -> Set[str]:
                             card_ids.add(value_item["cardId"])
     
     return card_ids
+
+
+def get_template_info_from_bulletin_master(bulletin_master) -> tuple[str | None, str | None]:
+    """Resolve the template display name and machine name used by a bulletin master, if available."""
+    template_master_id = getattr(bulletin_master, "base_template_master_id", None)
+    if not template_master_id:
+        return None, None
+
+    try:
+        template_master = templates_master_service.get_by_id(str(template_master_id))
+        return (
+            getattr(template_master, "template_name", None),
+            getattr(template_master, "name_machine", None),
+        )
+    except Exception:
+        return None, None
 
 
 # --- CRUD and queries for bulletin masters ---
@@ -309,11 +327,15 @@ def get_current_version_published(
         except Exception as e:
             # If cards fetch fails, continue without cards (graceful degradation)
             pass
+
+    template_name, template_machine_name = get_template_info_from_bulletin_master(bulletin_master)
     
     return BulletinWithCurrentVersionPublic(
         master=bulletin_master,
         current_version=current_version,
-        cards_metadata=cards_metadata
+        cards_metadata=cards_metadata,
+        template_name=template_name,
+        template_machine_name=template_machine_name
     )
 
 @router.get("/by-slug/{bulletinSlug}", response_model=BulletinWithCurrentVersionPublic)
@@ -370,11 +392,15 @@ def get_current_version_published_by_slug(
         except Exception as e:
             # If cards fetch fails, continue without cards (graceful degradation)
             pass
+
+    template_name, template_machine_name = get_template_info_from_bulletin_master(bulletin_master)
     
     return BulletinWithCurrentVersionPublic(
         master=bulletin_master,
+        template_name=template_name,
+        template_machine_name=template_machine_name,
         current_version=current_version,
-        cards_metadata=cards_metadata
+        cards_metadata=cards_metadata,
     )
 
 # --- CRUD and queries for bulletin versions ---
