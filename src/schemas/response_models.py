@@ -16,6 +16,12 @@ class BulletinWithCurrentVersion(BaseModel):
     master: BulletinsMasterRead
     current_version: BulletinsVersionRead
 
+class BulletinWithTemplateInfo(BaseModel):
+    """Public response model for a bulletin with its template metadata."""
+    master: BulletinsMasterRead
+    template_name: Optional[str] = None
+    template_machine_name: Optional[str] = None
+
 class BulletinWithCurrentVersionPublic(BaseModel):
     """Public response model with embedded cards metadata."""
     master: BulletinsMasterRead
