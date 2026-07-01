@@ -11,7 +11,7 @@ from acb_orm.schemas.cards_schema import CardsRead
 from acb_orm.enums.status_bulletin import StatusBulletin
 from acb_orm.enums.outcome_cycle import OutcomeCycle
 from auth.access_utils import get_current_user, user_has_permission
-from schemas.response_models import BulletinWithCurrentVersion, BulletinWithCurrentVersionPublic
+from schemas.response_models import BulletinWithCurrentVersion, BulletinWithCurrentVersionPublic, BulletinWithTemplateInfo
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 router = APIRouter(prefix="/bulletins", tags=["Bulletin Management"])
@@ -169,7 +169,7 @@ def get_bulletins_by_name(
     filters = {"bulletin_name__icontains": name}
     return bulletins_master_service.get_accessible_resources(user_id, filters)
 
-@router.get("/status/{status}", response_model=List[BulletinsMasterRead])
+@router.get("/status/{status}", response_model=List[BulletinWithTemplateInfo])
 def get_bulletins_by_status(
     status: str = Path(..., description=f"Template status. Possible options: {list(StatusBulletin._value2member_map_.keys())}"),
 ):
@@ -182,7 +182,18 @@ def get_bulletins_by_status(
         allowed = list(StatusBulletin._value2member_map_.keys())
         raise HTTPException(status_code=400, detail=f"Invalid status: {status}. Allowed: {allowed}")
     filters = {"status": status}
-    return bulletins_master_service.get_all(filters)
+    bulletins = bulletins_master_service.get_all(filters)
+    response = []
+    for bulletin in bulletins:
+        template_name, template_machine_name = get_template_info_from_bulletin_master(bulletin)
+        response.append(
+            BulletinWithTemplateInfo(
+                master=bulletin,
+                template_name=template_name,
+                template_machine_name=template_machine_name,
+            )
+        )
+    return response
 
 @router.get("/slug_name", response_model=list[str], include_in_schema=False)
 def get_all_bulletin_slug_names(
