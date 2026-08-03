@@ -49,10 +49,12 @@ def can_manage_review(user_id: str, bulletin_id: str) -> bool:
         if user_is_group_admin(user_id, group_id):
             return True
     
-    # Check if is reviewer of any group
     if is_reviewer_for_bulletin(user_id, bulletin_groups):
         return True
-    
+
+    if has_review_crud_for_bulletin(user_id, bulletin_groups):
+        return True
+
     return False
 
 
