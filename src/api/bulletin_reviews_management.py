@@ -9,7 +9,10 @@ from acb_orm.schemas.comment_schema import CommentRead
 from schemas.bulletin_reviews_schema import CommentCreateRequest, CommentCreateResponse, CommentUpdateRequest
 from acb_orm.enums.outcome_cycle import OutcomeCycle
 from acb_orm.enums.status_bulletin import StatusBulletin
-from auth.access_utils import get_current_user, is_superadmin, user_is_group_admin, is_editor_for_bulletin, is_reviewer_for_bulletin, user_has_permission
+from auth.access_utils import (
+    get_current_user,
+    user_has_permission,
+)
 from constants.permissions import MODULE_REVIEW, ACTION_CREATE, ACTION_READ, ACTION_UPDATE, ACTION_DELETE
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from tools.logger import logger
@@ -20,55 +23,98 @@ bulletin_reviews_service = BulletinReviewsService()
 users_service = UsersService()
 security = HTTPBearer()
 
+def get_bulletin_groups(bulletin) -> List[str]:
+    """
+    Return the group IDs associated with the bulletin.
+    """
+    access_config = getattr(
+        bulletin,
+        "access_config",
+        None,
+    )
 
-def can_manage_review(user_id: str, bulletin_id: str) -> bool:
+    allowed_groups = getattr(
+        access_config,
+        "allowed_groups",
+        [],
+    ) or []
+
+    return [
+        str(group.id) if hasattr(group, "id") else str(group)
+        for group in allowed_groups
+    ]
+
+
+def has_review_permissions_for_bulletin(
+    user_id: str,
+    bulletin_groups: List[str],
+    required_actions: List[str],
+) -> bool:
     """
-    Check if user can manage the review (approve/reject/open).
-    Returns True if user is the assigned reviewer OR admin of the group OR any reviewer of the bulletin's groups.
+    Return True when the user has every requested REVIEW permission
+    in at least one of the bulletin's groups.
     """
-    bulletin = bulletins_master_service.get_by_id(bulletin_id)
-    if not bulletin:
-        return False
-    
-    review = bulletin_reviews_service.get_review_by_bulletin(bulletin_id)
-    
-    # Check if is assigned reviewer
-    if review and review.reviewer_user_id and str(review.reviewer_user_id.id) == user_id:
-        return True
-    
-    # Check if is superadmin
-    if is_superadmin(user_id):
-        return True
-    
-    # Get bulletin groups
-    allowed_groups = bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else []
-    bulletin_groups = [str(g.id) if hasattr(g, 'id') else str(g) for g in allowed_groups]
-    
-    # Check if is admin of any group
     for group_id in bulletin_groups:
-        if user_is_group_admin(user_id, group_id):
-            return True
-    
-    if is_reviewer_for_bulletin(user_id, bulletin_groups):
-        return True
+        has_all_permissions = all(
+            user_has_permission(
+                user_id,
+                group_id,
+                MODULE_REVIEW,
+                action,
+            )
+            for action in required_actions
+        )
 
-    if has_review_crud_for_bulletin(user_id, bulletin_groups):
-        return True
+        if has_all_permissions:
+            return True
 
     return False
 
 
-def has_review_crud_for_bulletin(user_id: str, bulletin_groups: List[str]) -> bool:
-    """Return True if user has full CRUD in review module for at least one bulletin group."""
-    required_actions = [ACTION_CREATE, ACTION_READ, ACTION_UPDATE, ACTION_DELETE]
+def has_review_crud_for_bulletin(
+    user_id: str,
+    bulletin_groups: List[str],
+) -> bool:
+    """
+    Return True when the user has full CRUD permissions
+    in the REVIEW module for at least one bulletin group.
+    """
+    return has_review_permissions_for_bulletin(
+        user_id,
+        bulletin_groups,
+        [
+            ACTION_CREATE,
+            ACTION_READ,
+            ACTION_UPDATE,
+            ACTION_DELETE,
+        ],
+    )
 
-    for group_id in bulletin_groups:
-        if all(user_has_permission(user_id, group_id, MODULE_REVIEW, action) for action in required_actions):
-            return True
 
-    return False
+def require_review_permissions(
+    user_id: str,
+    bulletin,
+    required_actions: List[str],
+    detail: str,
+) -> None:
+    """
+    Raise 403 when the user does not have the requested permissions
+    in the REVIEW module.
+    """
+    bulletin_groups = get_bulletin_groups(
+        bulletin,
+    )
 
-
+    if not has_review_permissions_for_bulletin(
+        user_id,
+        bulletin_groups,
+        required_actions,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=detail,
+        )
+    
 # --- WORKFLOW ENDPOINTS ---
 
 @router.post("/{bulletin_id}/submit-for-review", response_model=BulletinsMasterRead)
@@ -163,16 +209,18 @@ def assign_reviewer(
         )
     
     # Check if user is admin (superadmin or group admin)
-    is_user_admin = is_superadmin(user_id)
-    if not is_user_admin:
-        allowed_groups = bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else []
-        for group_id in allowed_groups:
-            if user_is_group_admin(user_id, str(group_id)):
-                is_user_admin = True
-                break
-    
-    if not is_user_admin:
-        raise HTTPException(status_code=403, detail="Only admins can assign reviewers")
+    require_review_permissions(
+        user_id,
+        bulletin,
+        [
+            ACTION_READ,
+            ACTION_UPDATE,
+        ],
+        (
+            "REVIEW_READ and REVIEW_UPDATE permissions "
+            "are required to assign reviewers"
+        ),
+    )
     
     # Assign reviewer
     bulletin_reviews_service.assign_reviewer(bulletin_id, reviewer_user_id, user_id)
@@ -217,28 +265,57 @@ def open_review(
         )
     
     # Check permissions (reviewer or admin)
-    if not can_manage_review(user_id, bulletin_id):
-        raise HTTPException(status_code=403, detail="Only reviewers or admins can open review")
+    require_review_permissions(
+        user_id,
+        bulletin,
+        [
+            ACTION_READ,
+            ACTION_UPDATE,
+        ],
+        (
+            "REVIEW_READ and REVIEW_UPDATE permissions "
+            "are required to open the review"
+        ),
+    )
     
     # Auto-assign reviewer if not assigned and user is a reviewer (not admin)
-    review = bulletin_reviews_service.get_review_by_bulletin(bulletin_id)
+    review = bulletin_reviews_service.get_review_by_bulletin(
+        bulletin_id
+    )
+
     if not review or not review.reviewer_user_id:
-        # Check if user is a reviewer (not just admin/superadmin)
-        allowed_groups = bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else []
-        bulletin_groups = [str(g.id) if hasattr(g, 'id') else str(g) for g in allowed_groups]
-        
-        if is_reviewer_for_bulletin(user_id, bulletin_groups):
-            bulletin_reviews_service.assign_reviewer(bulletin_id, user_id, user_id)
-            logger.info(f"Auto-assigned reviewer {user_id} to bulletin {bulletin_id}")
-    
-    # Mark all editable comments as not editable (editor's window is closed)
-    bulletin_reviews_service.mark_all_editable_not_editable(bulletin_id)
-    
-    # Change status
-    update_data = BulletinsMasterUpdate(status=StatusBulletin.REVIEW)
-    updated_bulletin = bulletins_master_service.update(bulletin_id, update_data, user_id)
-    
-    logger.info(f"Bulletin {bulletin_id} review opened by user {user_id}")
+        bulletin_reviews_service.assign_reviewer(
+            bulletin_id,
+            user_id,
+            user_id,
+        )
+
+        logger.info(
+            f"Auto-assigned review manager {user_id} "
+            f"to bulletin {bulletin_id}"
+        )
+
+    # Close the editor comment window when review starts
+    bulletin_reviews_service.mark_all_editable_not_editable(
+        bulletin_id
+    )
+
+    # Change bulletin status from PENDING_REVIEW to REVIEW
+    update_data = BulletinsMasterUpdate(
+        status=StatusBulletin.REVIEW
+    )
+
+    updated_bulletin = bulletins_master_service.update(
+        bulletin_id,
+        update_data,
+        user_id,
+    )
+
+    logger.info(
+        f"Bulletin {bulletin_id} review opened "
+        f"by user {user_id}"
+    )
+
     return updated_bulletin
 
 @router.post("/{bulletin_id}/approve", response_model=BulletinsMasterRead)
@@ -266,8 +343,18 @@ def approve_bulletin(
         )
     
     # Check permissions
-    if not can_manage_review(user_id, bulletin_id):
-        raise HTTPException(status_code=403, detail="Only assigned reviewer or admin can approve")
+    require_review_permissions(
+        user_id,
+        bulletin,
+        [
+            ACTION_READ,
+            ACTION_UPDATE,
+        ],
+        (
+            "REVIEW_READ and REVIEW_UPDATE permissions "
+            "are required to approve the bulletin"
+        ),
+    )
     
     # Complete review cycle
     bulletin_reviews_service.complete_cycle(bulletin_id, 'approved', user_id)
@@ -311,8 +398,18 @@ def reject_bulletin(
         )
     
     # Check permissions
-    if not can_manage_review(user_id, bulletin_id):
-        raise HTTPException(status_code=403, detail="Only assigned reviewer or admin can reject")
+    require_review_permissions(
+        user_id,
+        bulletin,
+        [
+            ACTION_READ,
+            ACTION_UPDATE,
+        ],
+        (
+            "REVIEW_READ and REVIEW_UPDATE permissions "
+            "are required to reject the bulletin"
+        ),
+    )
     
     # Validate there's at least one comment in current cycle
     comment_count = bulletin_reviews_service.count_comments_in_cycle(bulletin_id)
@@ -399,26 +496,21 @@ def publish_direct(
             status_code=400,
             detail=f"Can only publish bulletins in DRAFT status. Current: {bulletin.status.value}"
         )
-    
-    # Collect bulletin groups for permission checks
-    allowed_groups = bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else []
-    bulletin_groups = [str(g.id) if hasattr(g, 'id') else str(g) for g in allowed_groups]
 
-    # Check if user is admin (superadmin or group admin)
-    is_user_admin = is_superadmin(user_id)
-    if not is_user_admin:
-        for group_id in bulletin_groups:
-            if user_is_group_admin(user_id, group_id):
-                is_user_admin = True
-                break
+    bulletin_groups = get_bulletin_groups(
+        bulletin,
+    )
 
-    # Also allow users with full CRUD permissions in review module
-    has_review_crud = has_review_crud_for_bulletin(user_id, bulletin_groups)
-
-    if not is_user_admin and not has_review_crud:
+    if not has_review_crud_for_bulletin(
+        user_id,
+        bulletin_groups,
+    ):
         raise HTTPException(
             status_code=403,
-            detail="Only admins or users with review CRUD permissions can publish directly"
+            detail=(
+                "Full CRUD permissions in the REVIEW module "
+                "are required to publish directly"
+            ),
         )
     
     # Change status to PUBLISHED
@@ -452,18 +544,18 @@ def archive_bulletin(
             detail=f"Can only archive bulletins in PUBLISHED status. Current: {bulletin.status.value}"
         )
     
-    # Check if user is admin (superadmin or group admin)
-    is_user_admin = is_superadmin(user_id)
-    if not is_user_admin:
-        allowed_groups = bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else []
-        for group_id in allowed_groups:
-            if user_is_group_admin(user_id, str(group_id)):
-                is_user_admin = True
-                break
-    
-    if not is_user_admin:
-        raise HTTPException(status_code=403, detail="Only admins can archive bulletins")
-    
+    require_review_permissions(
+        user_id,
+        bulletin,
+        [
+            ACTION_READ,
+            ACTION_UPDATE,
+        ],
+        (
+            "REVIEW_READ and REVIEW_UPDATE permissions "
+            "are required to archive the bulletin"
+        ),
+    )
     # Change status to ARCHIVED
     update_data = BulletinsMasterUpdate(status=StatusBulletin.ARCHIVED)
     updated_bulletin = bulletins_master_service.update(bulletin_id, update_data, user_id)
@@ -518,45 +610,51 @@ def add_comment(
             detail="This bulletin has no review yet. Comments cannot be added"
         )
     
+    # 3. Verificar si el review tiene comentarios
     has_comments = len(review.comments) > 0
-    bulletin_groups = [
-        str(g.id) if hasattr(g, 'id') else str(g)
-        for g in (bulletin.access_config.allowed_groups if hasattr(bulletin.access_config, 'allowed_groups') else [])
-    ]
-    
-    # 3. Superadmin o admin de algún grupo del boletín → usuario privilegiado
-    is_privileged = is_superadmin(user_id) or any(
-        user_is_group_admin(user_id, gid) for gid in bulletin_groups
-    )
-    
-    if is_privileged:
-        # Privilegiados: única restricción es DRAFT/PENDING sin comentarios previos
-        if status in (StatusBulletin.DRAFT, StatusBulletin.PENDING_REVIEW) and not has_comments:
-            raise HTTPException(
-                status_code=403,
-                detail="No comments can be added yet. First comments must be created during review"
-            )
-    
-    elif status in (StatusBulletin.REVIEW, StatusBulletin.REJECTED):
-        # Solo revisores pueden comentar en REVIEW y REJECTED
-        if not is_reviewer_for_bulletin(user_id, bulletin_groups):
-            raise HTTPException(
-                status_code=403,
-                detail="Only reviewers can comment when the bulletin is in review or rejected state"
-            )
-    
-    elif status in (StatusBulletin.DRAFT, StatusBulletin.PENDING_REVIEW):
-        # Solo editores, y solo si ya hay comentarios previos
+
+    if status in (
+        StatusBulletin.REVIEW,
+        StatusBulletin.REJECTED,
+    ):
+        require_review_permissions(
+            user_id,
+            bulletin,
+            [
+                ACTION_READ,
+                ACTION_CREATE,
+            ],
+            (
+                "REVIEW_READ and REVIEW_CREATE permissions "
+                "are required to add comments during review"
+            ),
+        )
+
+    elif status in (
+        StatusBulletin.DRAFT,
+        StatusBulletin.PENDING_REVIEW,
+    ):
         if not has_comments:
             raise HTTPException(
                 status_code=403,
-                detail="No comments can be added yet. First comments must be created during review"
+                detail=(
+                    "No comments can be added yet. "
+                    "First comments must be created during review"
+                ),
             )
-        if not is_editor_for_bulletin(user_id, bulletin_groups):
-            raise HTTPException(
-                status_code=403,
-                detail="Only editors can comment when the bulletin is in draft or pending review state"
-            )
+
+        require_review_permissions(
+            user_id,
+            bulletin,
+            [
+                ACTION_READ,
+                ACTION_CREATE,
+            ],
+            (
+                "REVIEW_READ and REVIEW_CREATE permissions "
+                "are required to reply to review comments"
+            ),
+        )
     
     # Add comment
     result = bulletin_reviews_service.add_comment(
