@@ -6,7 +6,15 @@ from services.users_service import UsersService
 from acb_orm.schemas.bulletins_master_schema import BulletinsMasterRead, BulletinsMasterUpdate
 from acb_orm.schemas.bulletin_reviews_schema import BulletinReviewsRead
 from acb_orm.schemas.comment_schema import CommentRead
-from schemas.bulletin_reviews_schema import CommentCreateRequest, CommentCreateResponse, CommentUpdateRequest
+from schemas.bulletin_reviews_schema import (
+    CommentCreateRequest,
+    CommentCreateResponse,
+    CommentUpdateRequest,
+    ReviewCollaborationStateRead,
+    ReviewDecisionRequest,
+    ReviewSessionCreateRequest,
+    ReviewSessionRead,
+)
 from acb_orm.enums.outcome_cycle import OutcomeCycle
 from acb_orm.enums.status_bulletin import StatusBulletin
 from auth.access_utils import (
@@ -115,6 +123,167 @@ def require_review_permissions(
             detail=detail,
         )
     
+
+
+def get_user_display_names(user: dict, user_id: str) -> tuple[Optional[str], Optional[str]]:
+    """Resolve names from the token and fall back to the local User document."""
+    first_name = user.get("given_name") or user.get("first_name")
+    last_name = user.get("family_name") or user.get("last_name")
+
+    if first_name or last_name:
+        return first_name, last_name
+
+    try:
+        user_record = users_service.get_by_id(user_id)
+        return user_record.first_name, user_record.last_name
+    except Exception:
+        return None, None
+
+
+def raise_review_not_active(bulletin_id: str, bulletin) -> None:
+    current_status = getattr(bulletin.status, "value", str(bulletin.status))
+    final_decision = bulletin_reviews_service.get_final_decision(bulletin_id)
+
+    if bulletin.status in (StatusBulletin.PUBLISHED, StatusBulletin.REJECTED):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "REVIEW_ALREADY_FINALIZED",
+                "message": "This bulletin review has already been finalized.",
+                "current_status": current_status,
+                "final_decision": final_decision,
+            },
+        )
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Can only complete bulletins in REVIEW status. "
+            f"Current: {current_status}"
+        ),
+    )
+
+
+def ensure_other_reviewers_confirmed(
+    bulletin_id: str,
+    current_user_id: str,
+    decision_request: Optional[ReviewDecisionRequest],
+) -> List[dict]:
+    active_reviewers = bulletin_reviews_service.get_active_reviewers(
+        bulletin_id,
+        current_user_id=current_user_id,
+    )
+    # Warn for every active session other than the current tab. Reviewers are
+    # grouped by user, so another tab from the same account is represented by
+    # session_count > 1 and must also require confirmation.
+    other_reviewers = [
+        reviewer
+        for reviewer in active_reviewers
+        if (
+            not reviewer.get("is_current_user")
+            or int(reviewer.get("session_count") or 0) > 1
+        )
+    ]
+
+    is_confirmed = bool(
+        decision_request and decision_request.confirm_other_reviewers
+    )
+
+    if other_reviewers and not is_confirmed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "OTHER_REVIEWERS_ACTIVE",
+                "message": (
+                    "Other users are currently reviewing this bulletin. "
+                    "Explicit confirmation is required to continue."
+                ),
+                "active_reviewers": other_reviewers,
+            },
+        )
+
+    return other_reviewers
+
+
+def finalize_review_decision(
+    bulletin_id: str,
+    user: dict,
+    action: str,
+    target_status: StatusBulletin,
+):
+    """Atomically change the bulletin status, then persist review audit data."""
+    user_id = user["user_db"]["id"]
+    first_name, last_name = get_user_display_names(user, user_id)
+
+    try:
+        updated_bulletin = bulletins_master_service.transition_status_atomically(
+            bulletin_id,
+            expected_status=StatusBulletin.REVIEW,
+            target_status=target_status,
+            user_id=user_id,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            current = bulletins_master_service.get_by_id(bulletin_id)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "REVIEW_ALREADY_FINALIZED",
+                    "message": (
+                        "Another reviewer finalized the bulletin before this "
+                        "action was completed."
+                    ),
+                    "current_status": getattr(
+                        current.status,
+                        "value",
+                        str(current.status),
+                    ),
+                    "final_decision": (
+                        bulletin_reviews_service.get_final_decision(bulletin_id)
+                    ),
+                },
+            ) from exc
+        raise
+
+    # The status transition above is the concurrency source of truth. The
+    # following writes are audit/presence updates and must not re-open the
+    # workflow if one of them fails.
+    try:
+        bulletin_reviews_service.record_final_decision(
+            bulletin_master_id=bulletin_id,
+            action=action,
+            target_status=target_status.value,
+            user_id=user_id,
+            first_name=first_name,
+            last_name=last_name,
+        )
+    except Exception as exc:
+        logger.exception(
+            f"Could not persist final review decision for {bulletin_id}: {exc}"
+        )
+
+    try:
+        bulletin_reviews_service.complete_cycle(
+            bulletin_id,
+            action,
+            user_id,
+        )
+
+        review = bulletin_reviews_service.get_review_by_bulletin(bulletin_id)
+        if review and review.review_cycles:
+            version_id = str(review.review_cycles[-1].bulletin_version_id.id)
+            bulletin_reviews_service.mark_comments_not_editable(
+                bulletin_id,
+                version_id,
+            )
+    except Exception as exc:
+        logger.exception(
+            f"Could not complete review audit cycle for {bulletin_id}: {exc}"
+        )
+
+    bulletin_reviews_service.delete_all_review_sessions(bulletin_id)
+    return updated_bulletin
+
 # --- WORKFLOW ENDPOINTS ---
 
 @router.post("/{bulletin_id}/submit-for-review", response_model=BulletinsMasterRead)
@@ -244,196 +413,273 @@ def open_review(
     bulletin_id: str = Path(..., description="Bulletin ID"),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
-    """
-    Open bulletin for review (PENDING_REVIEW → REVIEW).
-    Can be done by any reviewer of the bulletin's groups or admin.
-    If no reviewer is assigned, the user who opens it will be auto-assigned.
-    """
+    """Open a review or join one that is already in progress."""
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    
-    # Get bulletin
+
     bulletin = bulletins_master_service.get_by_id(bulletin_id)
-    if not bulletin:
-        raise HTTPException(status_code=404, detail="Bulletin not found")
-    
-    # Validate status
-    if bulletin.status != StatusBulletin.PENDING_REVIEW:
+
+    if bulletin.status not in (
+        StatusBulletin.PENDING_REVIEW,
+        StatusBulletin.REVIEW,
+    ):
         raise HTTPException(
             status_code=400,
-            detail=f"Can only open bulletins in PENDING_REVIEW. Current: {bulletin.status.value}"
+            detail=(
+                "Can only open bulletins in PENDING_REVIEW or REVIEW status. "
+                f"Current: {bulletin.status.value}"
+            ),
         )
-    
-    # Check permissions (reviewer or admin)
+
     require_review_permissions(
         user_id,
         bulletin,
-        [
-            ACTION_READ,
-            ACTION_UPDATE,
-        ],
+        [ACTION_READ, ACTION_UPDATE],
         (
             "REVIEW_READ and REVIEW_UPDATE permissions "
             "are required to open the review"
         ),
     )
-    
-    # Auto-assign reviewer if not assigned and user is a reviewer (not admin)
-    review = bulletin_reviews_service.get_review_by_bulletin(
-        bulletin_id
-    )
 
+    review = bulletin_reviews_service.get_review_by_bulletin(bulletin_id)
     if not review or not review.reviewer_user_id:
         bulletin_reviews_service.assign_reviewer(
             bulletin_id,
             user_id,
             user_id,
         )
-
         logger.info(
-            f"Auto-assigned review manager {user_id} "
-            f"to bulletin {bulletin_id}"
+            f"Auto-assigned review manager {user_id} to bulletin {bulletin_id}"
         )
 
-    # Close the editor comment window when review starts
-    bulletin_reviews_service.mark_all_editable_not_editable(
-        bulletin_id
-    )
+    # Joining an already-open review is intentionally idempotent.
+    if bulletin.status == StatusBulletin.REVIEW:
+        logger.info(
+            f"User {user_id} joined active review for bulletin {bulletin_id}"
+        )
+        return bulletin
 
-    # Change bulletin status from PENDING_REVIEW to REVIEW
-    update_data = BulletinsMasterUpdate(
-        status=StatusBulletin.REVIEW
-    )
+    bulletin_reviews_service.mark_all_editable_not_editable(bulletin_id)
 
-    updated_bulletin = bulletins_master_service.update(
-        bulletin_id,
-        update_data,
-        user_id,
-    )
+    try:
+        updated_bulletin = bulletins_master_service.transition_status_atomically(
+            bulletin_id,
+            expected_status=StatusBulletin.PENDING_REVIEW,
+            target_status=StatusBulletin.REVIEW,
+            user_id=user_id,
+        )
+    except HTTPException as exc:
+        # Two reviewers may open the same pending review at the same time. If
+        # the other request already moved it to REVIEW, joining still succeeds.
+        if exc.status_code == 409:
+            current = bulletins_master_service.get_by_id(bulletin_id)
+            if current.status == StatusBulletin.REVIEW:
+                return current
+        raise
 
-    logger.info(
-        f"Bulletin {bulletin_id} review opened "
-        f"by user {user_id}"
-    )
-
+    logger.info(f"Bulletin {bulletin_id} review opened by user {user_id}")
     return updated_bulletin
+
+
+@router.post("/{bulletin_id}/sessions", response_model=ReviewSessionRead)
+def create_review_session(
+    bulletin_id: str,
+    session_request: ReviewSessionCreateRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Register one browser tab as actively reviewing this bulletin."""
+    user = get_current_user(credentials)
+    user_id = user["user_db"]["id"]
+    bulletin = bulletins_master_service.get_by_id(bulletin_id)
+
+    if bulletin.status != StatusBulletin.REVIEW:
+        raise_review_not_active(bulletin_id, bulletin)
+
+    require_review_permissions(
+        user_id,
+        bulletin,
+        [ACTION_READ, ACTION_UPDATE],
+        "REVIEW_READ and REVIEW_UPDATE permissions are required",
+    )
+
+    first_name, last_name = get_user_display_names(user, user_id)
+    return bulletin_reviews_service.upsert_review_session(
+        bulletin_master_id=bulletin_id,
+        session_id=session_request.session_id,
+        user_id=user_id,
+        first_name=first_name,
+        last_name=last_name,
+    )
+
+
+@router.patch(
+    "/{bulletin_id}/sessions/{session_id}/heartbeat",
+    response_model=ReviewSessionRead,
+)
+def heartbeat_review_session(
+    bulletin_id: str,
+    session_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Keep the current browser-tab review session active."""
+    user = get_current_user(credentials)
+    user_id = user["user_db"]["id"]
+    bulletin = bulletins_master_service.get_by_id(bulletin_id)
+
+    if bulletin.status != StatusBulletin.REVIEW:
+        raise_review_not_active(bulletin_id, bulletin)
+
+    return bulletin_reviews_service.heartbeat_review_session(
+        bulletin_master_id=bulletin_id,
+        session_id=session_id,
+        user_id=user_id,
+    )
+
+
+@router.delete("/{bulletin_id}/sessions/{session_id}")
+def close_review_session(
+    bulletin_id: str,
+    session_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Close the current user's browser-tab review session."""
+    user = get_current_user(credentials)
+    user_id = user["user_db"]["id"]
+    bulletin_reviews_service.delete_review_session(
+        bulletin_master_id=bulletin_id,
+        session_id=session_id,
+        user_id=user_id,
+    )
+    return {"success": True}
+
+
+@router.get(
+    "/{bulletin_id}/collaboration-state",
+    response_model=ReviewCollaborationStateRead,
+)
+def get_review_collaboration_state(
+    bulletin_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Return workflow status, active reviewers, and the final decision."""
+    user = get_current_user(credentials)
+    user_id = user["user_db"]["id"]
+    bulletin = bulletins_master_service.get_by_id(bulletin_id)
+
+    require_review_permissions(
+        user_id,
+        bulletin,
+        [ACTION_READ],
+        "REVIEW_READ permission is required",
+    )
+
+    cycle_number = bulletin_reviews_service.get_current_cycle_number(bulletin_id)
+    return {
+        "bulletin_id": bulletin_id,
+        "status": bulletin.status.value,
+        "cycle_number": cycle_number,
+        "active_reviewers": bulletin_reviews_service.get_active_reviewers(
+            bulletin_id,
+            current_user_id=user_id,
+        ),
+        "final_decision": bulletin_reviews_service.get_final_decision(
+            bulletin_id,
+            cycle_number=cycle_number,
+        ),
+    }
+
 
 @router.post("/{bulletin_id}/approve", response_model=BulletinsMasterRead)
 def approve_bulletin(
     bulletin_id: str = Path(..., description="Bulletin ID"),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    decision_request: Optional[ReviewDecisionRequest] = Body(default=None),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    """
-    Approve bulletin (REVIEW → PUBLISHED).
-    Can only be done by assigned reviewer or admin.
-    """
+    """Approve and publish a bulletin after collaborative-review confirmation."""
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    
-    # Get bulletin
     bulletin = bulletins_master_service.get_by_id(bulletin_id)
-    if not bulletin:
-        raise HTTPException(status_code=404, detail="Bulletin not found")
-    
-    # Validate status
+
     if bulletin.status != StatusBulletin.REVIEW:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Can only approve bulletins in REVIEW status. Current: {bulletin.status.value}"
-        )
-    
-    # Check permissions
+        raise_review_not_active(bulletin_id, bulletin)
+
     require_review_permissions(
         user_id,
         bulletin,
-        [
-            ACTION_READ,
-            ACTION_UPDATE,
-        ],
+        [ACTION_READ, ACTION_UPDATE],
         (
             "REVIEW_READ and REVIEW_UPDATE permissions "
             "are required to approve the bulletin"
         ),
     )
-    
-    # Complete review cycle
-    bulletin_reviews_service.complete_cycle(bulletin_id, 'approved', user_id)
-    
-    # Mark comments as not editable
-    review = bulletin_reviews_service.get_review_by_bulletin(bulletin_id)
-    if review and review.review_cycles:
-        version_id = str(review.review_cycles[-1].bulletin_version_id.id)
-        bulletin_reviews_service.mark_comments_not_editable(bulletin_id, version_id)
-    
-    # Change status to PUBLISHED
-    update_data = BulletinsMasterUpdate(status=StatusBulletin.PUBLISHED)
-    updated_bulletin = bulletins_master_service.update(bulletin_id, update_data, user_id)
-    
+
+    ensure_other_reviewers_confirmed(
+        bulletin_id,
+        current_user_id=user_id,
+        decision_request=decision_request,
+    )
+
+    updated_bulletin = finalize_review_decision(
+        bulletin_id=bulletin_id,
+        user=user,
+        action="approved",
+        target_status=StatusBulletin.PUBLISHED,
+    )
+
     logger.info(f"Bulletin {bulletin_id} approved by user {user_id}")
     return updated_bulletin
+
 
 @router.post("/{bulletin_id}/reject", response_model=BulletinsMasterRead)
 def reject_bulletin(
     bulletin_id: str = Path(..., description="Bulletin ID"),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    decision_request: Optional[ReviewDecisionRequest] = Body(default=None),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    """
-    Reject bulletin (REVIEW → REJECTED).
-    Requires at least one comment in the current cycle.
-    Can only be done by assigned reviewer or admin.
-    """
+    """Reject a bulletin after collaborative-review confirmation."""
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    
-    # Get bulletin
     bulletin = bulletins_master_service.get_by_id(bulletin_id)
-    if not bulletin:
-        raise HTTPException(status_code=404, detail="Bulletin not found")
-    
-    # Validate status
+
     if bulletin.status != StatusBulletin.REVIEW:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Can only reject bulletins in REVIEW status. Current: {bulletin.status.value}"
-        )
-    
-    # Check permissions
+        raise_review_not_active(bulletin_id, bulletin)
+
     require_review_permissions(
         user_id,
         bulletin,
-        [
-            ACTION_READ,
-            ACTION_UPDATE,
-        ],
+        [ACTION_READ, ACTION_UPDATE],
         (
             "REVIEW_READ and REVIEW_UPDATE permissions "
             "are required to reject the bulletin"
         ),
     )
-    
-    # Validate there's at least one comment in current cycle
+
     comment_count = bulletin_reviews_service.count_comments_in_cycle(bulletin_id)
     if comment_count == 0:
         raise HTTPException(
             status_code=400,
-            detail="Cannot reject without comments. Please add at least one comment explaining the issues."
+            detail=(
+                "Cannot reject without comments. Please add at least one "
+                "comment explaining the issues."
+            ),
         )
-    
-    # Complete review cycle
-    bulletin_reviews_service.complete_cycle(bulletin_id, 'rejected', user_id)
-    
-    # Mark comments as not editable
-    review = bulletin_reviews_service.get_review_by_bulletin(bulletin_id)
-    if review and review.review_cycles:
-        version_id = str(review.review_cycles[-1].bulletin_version_id.id)
-        bulletin_reviews_service.mark_comments_not_editable(bulletin_id, version_id)
-    
-    # Change status to REJECTED
-    update_data = BulletinsMasterUpdate(status=StatusBulletin.REJECTED)
-    updated_bulletin = bulletins_master_service.update(bulletin_id, update_data, user_id)
-    
+
+    ensure_other_reviewers_confirmed(
+        bulletin_id,
+        current_user_id=user_id,
+        decision_request=decision_request,
+    )
+
+    updated_bulletin = finalize_review_decision(
+        bulletin_id=bulletin_id,
+        user=user,
+        action="rejected",
+        target_status=StatusBulletin.REJECTED,
+    )
+
     logger.info(f"Bulletin {bulletin_id} rejected by user {user_id}")
     return updated_bulletin
+
 
 @router.post("/{bulletin_id}/reopen", response_model=BulletinsMasterRead)
 def reopen_bulletin(

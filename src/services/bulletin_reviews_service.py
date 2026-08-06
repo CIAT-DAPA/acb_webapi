@@ -1,16 +1,19 @@
 from typing import List, Optional
 from bson import ObjectId
 from fastapi import HTTPException
+from mongoengine.errors import NotUniqueError
 from acb_orm.collections.bulletin_reviews import BulletinReviews
 from acb_orm.auxiliaries.target_element import TargetElement
 from acb_orm.auxiliaries.review_cycle import ReviewCycle
 from acb_orm.auxiliaries.comment import Comment
 from acb_orm.collections.users import User
 from acb_orm.auxiliaries.log import Log
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from tools.logger import logger
 from tools.utils import serialize_log
 import uuid
+
+from models.review_collaboration import ReviewDecision, ReviewSession
 
 
 class BulletinReviewsService:
@@ -155,21 +158,46 @@ class BulletinReviewsService:
         return review
     
     def complete_cycle(self, bulletin_master_id: str, outcome: str, user_id: str) -> BulletinReviews:
-        """Complete the current review cycle with outcome (approved/rejected)"""
-        review = BulletinReviews.objects(bulletin_master_id=ObjectId(bulletin_master_id)).first()
-        
+        """Complete the current review cycle with outcome (approved/rejected).
+
+        The method is idempotent for the same outcome. The bulletin status transition
+        remains the concurrency source of truth and is performed atomically by
+        BulletinsMasterService.
+        """
+        review = BulletinReviews.objects(
+            bulletin_master_id=ObjectId(bulletin_master_id)
+        ).first()
+
         if not review or not review.review_cycles:
             raise HTTPException(status_code=404, detail="No active review cycle found")
-        
+
         current_cycle = review.review_cycles[-1]
+
+        if current_cycle.completed_at is not None:
+            current_outcome = getattr(current_cycle.outcome, "value", current_cycle.outcome)
+            if current_outcome == outcome:
+                return review
+
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "REVIEW_CYCLE_ALREADY_COMPLETED",
+                    "message": "The current review cycle already has a final outcome.",
+                    "current_outcome": current_outcome,
+                },
+            )
+
         current_cycle.completed_at = datetime.now()
         current_cycle.outcome = outcome
-        
+
         review.log.updater_user_id = ObjectId(user_id)
         review.log.updated_at = datetime.now()
         review.save()
-        
-        logger.info(f"Completed review cycle for bulletin {bulletin_master_id} with outcome: {outcome}")
+
+        logger.info(
+            f"Completed review cycle for bulletin {bulletin_master_id} "
+            f"with outcome: {outcome}"
+        )
         return review
     
     def add_comment(self, bulletin_master_id: str, bulletin_version_id: str, text: str, 
@@ -416,3 +444,248 @@ class BulletinReviewsService:
             if comment.replies:
                 count += self._count_comments_by_version(comment.replies, version_id)
         return count
+
+    # --- Collaborative review presence and final-decision metadata ---
+
+    ACTIVE_SESSION_SECONDS = 45
+
+    @staticmethod
+    def _serialize_review_session(session: ReviewSession) -> dict:
+        return {
+            "session_id": session.session_id,
+            "bulletin_id": str(session.bulletin_master_id),
+            "user_id": str(session.user_id),
+            "first_name": session.user_first_name,
+            "last_name": session.user_last_name,
+            "entered_at": session.entered_at,
+            "last_seen_at": session.last_seen_at,
+        }
+
+    @staticmethod
+    def _serialize_review_decision(decision: ReviewDecision) -> dict:
+        return {
+            "cycle_number": decision.cycle_number,
+            "action": decision.action,
+            "target_status": decision.target_status,
+            "decided_by": str(decision.decided_by),
+            "decided_by_first_name": decision.decided_by_first_name,
+            "decided_by_last_name": decision.decided_by_last_name,
+            "decided_at": decision.decided_at,
+        }
+
+    def upsert_review_session(
+        self,
+        bulletin_master_id: str,
+        session_id: str,
+        user_id: str,
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None,
+    ) -> dict:
+        """Create or refresh one browser-tab review presence session."""
+        if not ObjectId.is_valid(bulletin_master_id):
+            raise HTTPException(status_code=400, detail="Invalid bulletin master ID")
+        if not ObjectId.is_valid(user_id):
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+        bulletin_object_id = ObjectId(bulletin_master_id)
+        user_object_id = ObjectId(user_id)
+        now = datetime.now(timezone.utc)
+
+        existing = ReviewSession.objects(session_id=session_id).first()
+        if existing and (
+            existing.bulletin_master_id != bulletin_object_id
+            or existing.user_id != user_object_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "REVIEW_SESSION_ID_CONFLICT",
+                    "message": "This review session ID is already in use.",
+                },
+            )
+
+        try:
+            session = ReviewSession.objects(session_id=session_id).modify(
+                new=True,
+                upsert=True,
+                set__bulletin_master_id=bulletin_object_id,
+                set__user_id=user_object_id,
+                set__user_first_name=first_name,
+                set__user_last_name=last_name,
+                set_on_insert__entered_at=now,
+                set__last_seen_at=now,
+            )
+        except NotUniqueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "REVIEW_SESSION_ID_CONFLICT",
+                    "message": "This review session ID is already in use.",
+                },
+            ) from exc
+
+        return self._serialize_review_session(session)
+
+    def heartbeat_review_session(
+        self,
+        bulletin_master_id: str,
+        session_id: str,
+        user_id: str,
+    ) -> dict:
+        """Refresh the last-seen timestamp of the current user's session."""
+        if not ObjectId.is_valid(bulletin_master_id) or not ObjectId.is_valid(user_id):
+            raise HTTPException(status_code=400, detail="Invalid review session identifiers")
+
+        session = ReviewSession.objects(
+            session_id=session_id,
+            bulletin_master_id=ObjectId(bulletin_master_id),
+            user_id=ObjectId(user_id),
+        ).modify(
+            new=True,
+            set__last_seen_at=datetime.now(timezone.utc),
+        )
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Review session not found")
+
+        return self._serialize_review_session(session)
+
+    def delete_review_session(
+        self,
+        bulletin_master_id: str,
+        session_id: str,
+        user_id: str,
+    ) -> bool:
+        """Delete one browser-tab session owned by the current user."""
+        if not ObjectId.is_valid(bulletin_master_id) or not ObjectId.is_valid(user_id):
+            return False
+
+        deleted = ReviewSession.objects(
+            session_id=session_id,
+            bulletin_master_id=ObjectId(bulletin_master_id),
+            user_id=ObjectId(user_id),
+        ).delete()
+        return bool(deleted)
+
+    def delete_all_review_sessions(self, bulletin_master_id: str) -> int:
+        """Close all active sessions after a final workflow decision."""
+        if not ObjectId.is_valid(bulletin_master_id):
+            return 0
+        return int(
+            ReviewSession.objects(
+                bulletin_master_id=ObjectId(bulletin_master_id)
+            ).delete()
+        )
+
+    def get_active_reviewers(
+        self,
+        bulletin_master_id: str,
+        current_user_id: Optional[str] = None,
+    ) -> List[dict]:
+        """Return active reviewers, grouped by user instead of browser tab."""
+        if not ObjectId.is_valid(bulletin_master_id):
+            return []
+
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self.ACTIVE_SESSION_SECONDS
+        )
+        sessions = ReviewSession.objects(
+            bulletin_master_id=ObjectId(bulletin_master_id),
+            last_seen_at__gte=cutoff,
+        ).order_by("entered_at")
+
+        grouped = {}
+        for session in sessions:
+            key = str(session.user_id)
+            existing = grouped.get(key)
+
+            if not existing:
+                grouped[key] = {
+                    "user_id": key,
+                    "first_name": session.user_first_name,
+                    "last_name": session.user_last_name,
+                    "entered_at": session.entered_at,
+                    "last_seen_at": session.last_seen_at,
+                    "session_count": 1,
+                    "is_current_user": key == current_user_id,
+                }
+                continue
+
+            existing["session_count"] += 1
+            existing["entered_at"] = min(existing["entered_at"], session.entered_at)
+            existing["last_seen_at"] = max(existing["last_seen_at"], session.last_seen_at)
+
+            if not existing.get("first_name") and session.user_first_name:
+                existing["first_name"] = session.user_first_name
+            if not existing.get("last_name") and session.user_last_name:
+                existing["last_name"] = session.user_last_name
+
+        return list(grouped.values())
+
+    def get_current_cycle_number(self, bulletin_master_id: str) -> Optional[int]:
+        review = self.get_review_by_bulletin(bulletin_master_id)
+        if not review or not review.review_cycles:
+            return None
+        return review.review_cycles[-1].cycle_number
+
+    def record_final_decision(
+        self,
+        bulletin_master_id: str,
+        action: str,
+        target_status: str,
+        user_id: str,
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None,
+    ) -> dict:
+        """Persist who made the final decision without changing acb_orm."""
+        cycle_number = self.get_current_cycle_number(bulletin_master_id)
+        if cycle_number is None:
+            raise HTTPException(status_code=404, detail="No active review cycle found")
+
+        bulletin_object_id = ObjectId(bulletin_master_id)
+        now = datetime.now(timezone.utc)
+        existing = ReviewDecision.objects(
+            bulletin_master_id=bulletin_object_id,
+            cycle_number=cycle_number,
+        ).first()
+
+        if existing:
+            return self._serialize_review_decision(existing)
+
+        decision = ReviewDecision(
+            bulletin_master_id=bulletin_object_id,
+            cycle_number=cycle_number,
+            action=action,
+            target_status=target_status,
+            decided_by=ObjectId(user_id),
+            decided_by_first_name=first_name,
+            decided_by_last_name=last_name,
+            decided_at=now,
+        )
+
+        try:
+            decision.save()
+        except NotUniqueError:
+            decision = ReviewDecision.objects(
+                bulletin_master_id=bulletin_object_id,
+                cycle_number=cycle_number,
+            ).first()
+
+        return self._serialize_review_decision(decision)
+
+    def get_final_decision(
+        self,
+        bulletin_master_id: str,
+        cycle_number: Optional[int] = None,
+    ) -> Optional[dict]:
+        if not ObjectId.is_valid(bulletin_master_id):
+            return None
+
+        query = ReviewDecision.objects(
+            bulletin_master_id=ObjectId(bulletin_master_id)
+        )
+        if cycle_number is not None:
+            query = query.filter(cycle_number=cycle_number)
+
+        decision = query.order_by("-cycle_number", "-decided_at").first()
+        return self._serialize_review_decision(decision) if decision else None
