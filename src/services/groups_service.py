@@ -1,4 +1,4 @@
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from bson import ObjectId
 from fastapi import HTTPException
 from acb_orm.collections.groups import Group
@@ -11,6 +11,7 @@ from mongoengine import DoesNotExist
 from auth.access_utils import serialize_log, user_has_permission, is_superadmin, user_is_group_admin
 from constants.permissions import MODULE_ACCESS_CONTROL, ACTION_CREATE, ACTION_UPDATE, ACTION_DELETE
 from .base_service import BaseService
+from .roles_service import RoleService
 
 class GroupsService(
     BaseService[
@@ -38,6 +39,7 @@ class GroupsService(
         return data
 
     def __init__(self):
+        self.role_service = RoleService()
         super().__init__(Group, GroupsRead)
 
     def create(self, obj_in: GroupsCreate, user_id: Optional[str] = None, module: Optional[str] = None) -> GroupsRead:
@@ -306,3 +308,118 @@ class GroupsService(
             if str(ua.user_id.id) == str(user_id) and str(ua.role_id.id) == str(role_id):
                 return True
         return False
+
+    def get_users_with_permission_rules(
+        self,
+        group_id: str,
+        permission_rules: List[Dict[str, Any]],
+        match_mode: str = "any",
+        exclude_user_id: Optional[str] = None,
+    ) -> List[User]:
+        """
+        Returns the users in a group whose role satisfies one or more permission
+        rules. See RoleService.role_matches_rule for the format of each rule.
+
+        match_mode: "any" (matches at least one rule) | "all" (must match all)
+        """
+        try:
+            group = Group.objects.get(id=group_id)
+        except Group.DoesNotExist:
+            raise HTTPException(status_code=404, detail="Group not found")
+ 
+        if not group.users_access:
+            return []
+ 
+        role_ids = {str(ua.role_id.id) for ua in group.users_access if ua.role_id}
+        roles_map = self.role_service.get_roles_map(list(role_ids))
+ 
+        matching_user_ids = []
+        for ua in group.users_access:
+            if not ua.role_id or not ua.user_id:
+                continue
+ 
+            role = roles_map.get(str(ua.role_id.id))
+            if not role:
+                continue
+ 
+            if self.role_service.role_matches_rules(role, permission_rules, match_mode):
+                matching_user_ids.append(ua.user_id.id)
+ 
+        if not matching_user_ids:
+            return []
+ 
+        users = list(User.objects(id__in=matching_user_ids))
+        if exclude_user_id:
+            users = [u for u in users if str(u.id) != exclude_user_id]
+        return users
+ 
+    def get_users_with_permission_rules_in_groups(
+        self,
+        group_ids: List[str],
+        permission_rules: List[Dict[str, Any]],
+        match_mode: str = "any",
+        exclude_user_id: Optional[str] = None,
+    ) -> List[User]:
+        """Same logic as `get_users_with_permission_rules`, combining multiple groups without duplicates."""
+        seen_ids = set()
+        result = []
+        for group_id in group_ids:
+            print(f"Checking group {group_id} for permission rules: {permission_rules}")
+            try:
+                users = self.get_users_with_permission_rules(
+                    group_id, permission_rules, match_mode,
+                )
+            except HTTPException:
+                continue
+            for user in users:
+                uid = str(user.id)
+                if exclude_user_id and uid == exclude_user_id:
+                    continue
+                if uid not in seen_ids:
+                    seen_ids.add(uid)
+                    result.append(user)
+        print(f"Final result: {result}")
+        return result
+ 
+    def get_users_with_permission(
+        self,
+        group_id: str,
+        module: str,
+        actions: List[str],
+        require_all: bool = True,
+        exclude_if_module: Optional[str] = None,
+        exclude_if_actions: Optional[List[str]] = None,
+    ) -> List[User]:
+        """Shortcut for the common case of a single permission rule (a single module)."""
+        rule = {
+            "module": module,
+            "actions": actions,
+            "require_all": require_all,
+            "exclude_if_module": exclude_if_module,
+            "exclude_if_actions": exclude_if_actions,
+        }
+        return self.get_users_with_permission_rules(group_id, [rule], match_mode="any")
+ 
+    def get_users_with_permission_in_groups(
+        self,
+        group_ids: List[str],
+        module: str,
+        actions: List[str],
+        require_all: bool = True,
+        exclude_if_module: Optional[str] = None,
+        exclude_if_actions: Optional[List[str]] = None,
+        exclude_user_id: Optional[str] = None,
+    ) -> List[User]:
+        """Shortcut for the common case of a single permission rule (a single module), combining multiple groups without duplicates."""
+        rule = {
+            "module": module,
+            "actions": actions,
+            "require_all": require_all,
+            "exclude_if_module": exclude_if_module,
+            "exclude_if_actions": exclude_if_actions,
+        }
+
+        print(f"Searching for users in groups {group_ids} with permission rule: {rule}, excluding user_id: {exclude_user_id}")
+        return self.get_users_with_permission_rules_in_groups(
+            group_ids, [rule], match_mode="any", exclude_user_id=exclude_user_id,
+        )

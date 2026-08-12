@@ -1,0 +1,30 @@
+{% extends "base_email.html" %}
+
+{% block title %}New comment{% endblock %}
+{% block header_color %}#f9a825{% endblock %}
+
+{% block content %}
+  <h2 style="color:#f9a825;margin-top:0;">💬 New comment</h2>
+
+  <p>Hi{% if recipient_name %} {{ recipient_name }}{% endif %},</p>
+
+  <p>
+    <strong>{{ reviewer_name }}</strong> left a new comment on the bulletin
+    <strong>"{{ bulletin_title }}"</strong>.
+  </p>
+
+  {% if comment %}
+  <div style="background:#fff8e1;border-left:4px solid #f9a825;padding:12px 16px;
+              border-radius:4px;margin:16px 0;">
+    {{ comment }}
+  </div>
+  {% endif %}
+
+  <p style="margin-top:24px;">
+    <a href="{{ url }}"
+       style="background:#f9a825;color:#ffffff;padding:12px 22px;border-radius:6px;
+              text-decoration:none;font-weight:bold;display:inline-block;">
+      View comment
+    </a>
+  </p>
+{% endblock %}

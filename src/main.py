@@ -23,8 +23,6 @@ app = FastAPI(
     title="Bulletin Builder API"
 )
 
-load_dotenv()
-
 try:
     init_db()
     logger.info("Conexión a MongoDB exitosa")

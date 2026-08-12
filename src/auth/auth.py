@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import requests
 import os
 from dotenv import load_dotenv
+import tools.config as config
 
 load_dotenv()
 #test
@@ -19,10 +20,10 @@ class LoginRequest(BaseModel):
 
 @router.post("/login", summary="Autentication with Keycloak", description="Get access and refresh tokens using Keycloak's password grant flow.")
 def login(data: LoginRequest):
-    KEYCLOAK_URL = os.getenv("KEYCLOAK_URL")
-    REALM_NAME = os.getenv("KEYCLOAK_REALM")
-    CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID")
-    CLIENT_SECRET = os.getenv("KEYCLOAK_CLIENT_SECRET")
+    KEYCLOAK_URL = config.KEYCLOAK_URL
+    REALM_NAME = config.KEYCLOAK_REALM
+    CLIENT_ID = config.KEYCLOAK_CLIENT_ID
+    CLIENT_SECRET = config.KEYCLOAK_CLIENT_SECRET
     """
     Login endpoint to authenticate users with Keycloak.
     This endpoint uses the password grant type to obtain an access token and a refresh token.
