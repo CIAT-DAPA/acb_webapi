@@ -1,9 +1,11 @@
+import os
 from datetime import datetime
 from typing import Any, List, Optional
 
 from bson import ObjectId
 from fastapi import HTTPException
 from mongoengine import DoesNotExist, Document
+import tools.config as config
 
 from acb_orm.collections.bulletins_master import BulletinsMaster
 from acb_orm.enums.status_bulletin import StatusBulletin
@@ -17,7 +19,10 @@ from tools.logger import logger
 
 from .base_service import BaseService
 from .bulletins_version_service import BulletinsVersionService
+from .templates_master_service import TemplatesMasterService
 
+FRONTEND_URL = config.FRONTEND_URL
+DEFAULT_LOCALE = config.DEFAULT_LOCALE
 
 class BulletinsMasterService(
     BaseService[
@@ -190,3 +195,64 @@ class BulletinsMasterService(
         else:
             cloned_version = None
         return new_master, cloned_version
+
+    def get_template_info_from_bulletin_master(self, bulletin_master) -> tuple[str | None, str | None]:
+        """Resolve the template display name and machine name used by a bulletin master, if available."""
+        template_master_ref = getattr(bulletin_master, "base_template_master_id", None)
+        if not template_master_ref:
+            return None, None
+
+        # Si mongoengine ya lo dereferenció, es el Document completo:
+        # leemos los campos directo, sin ir a la base de datos otra vez.
+        if isinstance(template_master_ref, Document):
+            return (
+                getattr(template_master_ref, "template_name", None),
+                getattr(template_master_ref, "name_machine", None),
+            )
+
+        # Solo si viene como id crudo (ObjectId/str) necesitamos ir a buscarlo.
+        templates_master_service = TemplatesMasterService()
+        try:
+            template_master = templates_master_service.get_by_id(str(template_master_ref))
+            return (
+                getattr(template_master, "template_name", None),
+                getattr(template_master, "name_machine", None),
+            )
+        except Exception:
+            return None, None
+
+
+    def get_public_url(
+        self,
+        bulletin_master_id: str,
+        locale: str = DEFAULT_LOCALE,
+    ) -> Optional[str]:
+        """
+        Construye la URL pública del boletín, siguiendo el mismo patrón que
+        usa el sitemap del frontend: /{locale}/{templateSlug}/{bulletinSlug}
+
+        Devuelve None si el bulletin no existe o le falta algún slug
+        (mismo comportamiento que el sitemap: si falta info, no arma el link).
+        """
+        if not ObjectId.is_valid(bulletin_master_id):
+            return None
+
+        bulletin = BulletinsMaster.objects(id=bulletin_master_id).first()
+        if not bulletin:
+            return None
+
+        bulletin_slug = getattr(bulletin, "name_machine", None)
+        if not bulletin_slug:
+            logger.warning(f"Bulletin {bulletin_master_id} sin name_machine, no se puede armar la URL")
+            return None
+
+        _, template_slug = self.get_template_info_from_bulletin_master(bulletin)
+        if not template_slug:
+            logger.warning(f"Bulletin {bulletin_master_id} sin template_machine_name, no se puede armar la URL")
+            return None
+
+        if not FRONTEND_URL:
+            logger.warning("FRONTEND_URL no está configurado, no se puede armar la URL pública")
+            return None
+
+        return f"{FRONTEND_URL}/{locale}/{template_slug}/{bulletin_slug}"

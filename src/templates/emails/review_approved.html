@@ -1,0 +1,33 @@
+{% extends "base_email.html" %}
+
+{% block title %}Bulletin approved{% endblock %}
+{% block header_color %}#2e7d32{% endblock %}
+
+{% block content %}
+  <h2 style="color:#2e7d32;margin-top:0;">✅ Bulletin approved</h2>
+
+  <p>Hi{% if recipient_name %} {{ recipient_name }}{% endif %},</p>
+
+  <p>
+    Good news: <strong>{{ reviewer_name }}</strong> approved the bulletin
+    <strong>"{{ bulletin_title }}"</strong>.
+  </p>
+
+  {% if comment %}
+  <div style="background:#f1f8e9;border-left:4px solid #2e7d32;padding:12px 16px;
+              border-radius:4px;margin:16px 0;">
+    <span style="color:#666;font-size:13px;">Reviewer's comment</span><br>
+    {{ comment }}
+  </div>
+  {% endif %}
+
+  <p>The bulletin is ready for the next step of the process.</p>
+
+  <p style="margin-top:24px;">
+    <a href="{{ url }}"
+       style="background:#2e7d32;color:#ffffff;padding:12px 22px;border-radius:6px;
+              text-decoration:none;font-weight:bold;display:inline-block;">
+      View bulletin
+    </a>
+  </p>
+{% endblock %}

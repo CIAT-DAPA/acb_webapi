@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{% block title %}Bulletin notification{% endblock %}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6f8;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f8;padding:24px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="560" cellpadding="0" cellspacing="0"
+               style="background:#ffffff;border-radius:8px;border:1px solid #e2e5e9;overflow:hidden;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:#1b3a1f;padding:20px 28px;">
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding-right:10px;vertical-align:middle;">
+                    <!-- Logo placeholder: swap this emoji for <img src="..."> when ready -->
+                    <span style="font-size:22px;">🌱</span>
+                  </td>
+                  <td style="vertical-align:middle;">
+                    <span style="color:#ffffff;font-size:19px;font-weight:800;
+                                 font-family:Arial,Helvetica,sans-serif;letter-spacing:0.2px;">
+                      Bulletin Builder
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Accent bar (per-event color) -->
+          <tr>
+            <td style="background:{% block header_color %}#2e7d32{% endblock %};height:4px;line-height:4px;font-size:0;">&nbsp;</td>
+          </tr>
+
+          <!-- Content -->
+          <tr>
+            <td style="padding:28px;color:#333333;font-size:15px;line-height:1.5;">
+              {% block content %}{% endblock %}
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:16px 28px;border-top:1px solid #eeeeee;">
+              <p style="color:#999999;font-size:12px;margin:0;">
+                Automated notification from the Bulletin Builder system.
+                Please do not reply to this email.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

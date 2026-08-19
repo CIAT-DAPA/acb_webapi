@@ -1,8 +1,11 @@
-from fastapi import APIRouter, HTTPException, Depends, Path, Body
+from fastapi import APIRouter, HTTPException, Depends, Path, Body, BackgroundTasks
 from typing import List, Optional
 from services.bulletins_master_service import BulletinsMasterService
 from services.bulletin_reviews_service import BulletinReviewsService
+from services.groups_service import GroupsService
 from services.users_service import UsersService
+from services.notification_service import NotificationService
+from services.keycloak_service import KeycloakService
 from acb_orm.schemas.bulletins_master_schema import BulletinsMasterRead, BulletinsMasterUpdate
 from acb_orm.schemas.bulletin_reviews_schema import BulletinReviewsRead
 from acb_orm.schemas.comment_schema import CommentRead
@@ -24,11 +27,16 @@ from auth.access_utils import (
 from constants.permissions import MODULE_REVIEW, ACTION_CREATE, ACTION_READ, ACTION_UPDATE, ACTION_DELETE
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from tools.logger import logger
+import tools.config as config
 
 router = APIRouter(prefix="/bulletins/reviews", tags=["Bulletin Reviews & Workflow"])
 bulletins_master_service = BulletinsMasterService()
 bulletin_reviews_service = BulletinReviewsService()
 users_service = UsersService()
+notification_service = NotificationService()
+groups_service = GroupsService()
+keycloak_service = KeycloakService()
+
 security = HTTPBearer()
 
 def get_bulletin_groups(bulletin) -> List[str]:
@@ -288,6 +296,7 @@ def finalize_review_decision(
 
 @router.post("/{bulletin_id}/submit-for-review", response_model=BulletinsMasterRead)
 def submit_for_review(
+    background_tasks: BackgroundTasks,
     bulletin_id: str = Path(..., description="Bulletin ID"),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
@@ -343,12 +352,64 @@ def submit_for_review(
     updated_bulletin = bulletins_master_service.update(bulletin_id, update_data, user_id)
     
     # Add review cycle
-    bulletin_reviews_service.add_review_cycle(
+    finalreview = bulletin_reviews_service.add_review_cycle(
         bulletin_id,
         bulletin.current_version_id,
         user_id
     )
-    
+
+    # --- NOTIFICACIÓN ---
+    author_name = user["name"] if user and "name" in user else "Unknown Author"
+
+    if finalreview and finalreview.reviewer_user_id:
+        # Reenvío: ya hay un revisor asignado, solo le avisamos a él
+        reviewer = users_service.get_by_id(str(finalreview.reviewer_user_id.id))
+        kc_reviewer = keycloak_service.get_user_by_ext_id(reviewer.ext_id)
+
+        if kc_reviewer and kc_reviewer.get("email"):
+            background_tasks.add_task(
+                notification_service.review_requested,
+                recipients=[kc_reviewer["email"]],
+                context={
+                    "bulletin_title": bulletin.bulletin_name,
+                    "author_name": author_name,
+                    "url": config.FRONTEND_URL,
+                    "recipient_name": reviewer.first_name,
+                },
+            )
+        else:
+            logger.warning(f"No email found in Keycloak for reviewer {reviewer.ext_id}")
+
+    else:
+        # Primera vez: avisamos a todos los revisores del/los grupo(s) del boletín
+        bulletin_groups = get_bulletin_groups(bulletin)
+
+        reviewers = groups_service.get_users_with_permission_in_groups(
+            group_ids=bulletin_groups,
+            module=MODULE_REVIEW,
+            actions=ACTION_UPDATE,
+        )
+
+        if reviewers:
+            ext_ids = [r.ext_id for r in reviewers]
+            kc_users = keycloak_service.get_users_by_ext_ids(ext_ids)
+            recipients = [u["email"] for u in kc_users.values() if u.get("email")]
+
+            if recipients:
+                background_tasks.add_task(
+                    notification_service.review_requested,
+                    recipients=recipients,
+                    context={
+                        "bulletin_title": bulletin.bulletin_name,
+                        "author_name": author_name,
+                        "url": config.FRONTEND_URL,
+                    },
+                )
+            else:
+                logger.warning(f"No emails were found in Keycloak for the bulletin reviewers {bulletin_id}")
+        else:
+            logger.warning(f"There are no reviewers with assigned permissions for bulletin {bulletin_id}")
+
     logger.info(f"Bulletin {bulletin_id} submitted for review by user {user_id}")
     return updated_bulletin
 
@@ -591,6 +652,7 @@ def get_review_collaboration_state(
 
 @router.post("/{bulletin_id}/approve", response_model=BulletinsMasterRead)
 def approve_bulletin(
+    background_tasks: BackgroundTasks,
     bulletin_id: str = Path(..., description="Bulletin ID"),
     decision_request: Optional[ReviewDecisionRequest] = Body(default=None),
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -626,12 +688,46 @@ def approve_bulletin(
         target_status=StatusBulletin.PUBLISHED,
     )
 
+     # --- NOTIFICACIÓN al autor ---
+    reviewer_first_name, reviewer_last_name = get_user_display_names(user, user_id)
+    reviewer_name = f"{reviewer_first_name or ''} {reviewer_last_name or ''}".strip() or "Un revisor"
+
+    template_name, template_machine_name = bulletins_master_service.get_template_info_from_bulletin_master(bulletin)
+
+    author_id = str(bulletin.log.creator_user_id)  
+    author = users_service.get_by_id(author_id)
+    kc_author = keycloak_service.get_user_by_ext_id(author.ext_id)
+
+    # Comentario más reciente del ciclo, para dar contexto de por qué se rechazó
+    review = bulletin_reviews_service.get_review_by_bulletin(bulletin_id)
+    last_comment = review.comments[-1].text if review and review.comments else None
+
+    url = bulletins_master_service.get_public_url(bulletin_id)
+
+    if kc_author and kc_author.get("email"):
+        background_tasks.add_task(
+            notification_service.review_approved,
+            recipients=[kc_author["email"]],
+            context={
+                "bulletin_title": updated_bulletin.bulletin_name,
+                "reviewer_name": reviewer_name,
+                "comment": last_comment,
+                "url": url,
+                "recipient_name": author.first_name,
+            },
+        )
+    else:
+        logger.warning(
+            f"No se encontró email en Keycloak para el autor {author_id} del boletín {bulletin_id}"
+        )
+
     logger.info(f"Bulletin {bulletin_id} approved by user {user_id}")
     return updated_bulletin
 
 
 @router.post("/{bulletin_id}/reject", response_model=BulletinsMasterRead)
 def reject_bulletin(
+    background_tasks: BackgroundTasks,
     bulletin_id: str = Path(..., description="Bulletin ID"),
     decision_request: Optional[ReviewDecisionRequest] = Body(default=None),
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -676,6 +772,35 @@ def reject_bulletin(
         action="rejected",
         target_status=StatusBulletin.REJECTED,
     )
+
+ # --- NOTIFICACIÓN al autor ---
+    reviewer_first_name, reviewer_last_name = get_user_display_names(user, user_id)
+    reviewer_name = f"{reviewer_first_name or ''} {reviewer_last_name or ''}".strip() or "Un revisor"
+
+    author_id = str(bulletin.log.creator_user_id)  
+    author = users_service.get_by_id(author_id)
+    kc_author = keycloak_service.get_user_by_ext_id(author.ext_id)
+
+    # Comentario más reciente del ciclo, para dar contexto de por qué se rechazó
+    review = bulletin_reviews_service.get_review_by_bulletin(bulletin_id)
+    last_comment = review.comments[-1].text if review and review.comments else None
+
+    if kc_author and kc_author.get("email"):
+        background_tasks.add_task(
+            notification_service.review_rejected,
+            recipients=[kc_author["email"]],
+            context={
+                "bulletin_title": updated_bulletin.bulletin_name,
+                "reviewer_name": reviewer_name,
+                "comment": last_comment,
+                "url": config.FRONTEND_URL,
+                "recipient_name": author.first_name,
+            },
+        )
+    else:
+        logger.warning(
+            f"No se encontró email en Keycloak para el autor {author_id} del boletín {bulletin_id}"
+        )
 
     logger.info(f"Bulletin {bulletin_id} rejected by user {user_id}")
     return updated_bulletin
