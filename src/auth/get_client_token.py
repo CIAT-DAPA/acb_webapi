@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import httpx
 import os
+import tools.config as config
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 class ClientCredentials(BaseModel):
@@ -12,8 +13,8 @@ class ClientCredentials(BaseModel):
 
 @router.post("/get-client-token", summary="Get a Keycloak token using client credentials")
 async def get_token(body: ClientCredentials):
-    KEYCLOAK_BASE_URL = os.getenv("KEYCLOAK_URL")
-    REALM = os.getenv("KEYCLOAK_REALM")
+    KEYCLOAK_BASE_URL = config.KEYCLOAK_URL
+    REALM = config.KEYCLOAK_REALM
     TOKEN_ENDPOINT = f"{KEYCLOAK_BASE_URL}/realms/{REALM}/protocol/openid-connect/token"
     data = {
         "grant_type": "client_credentials",

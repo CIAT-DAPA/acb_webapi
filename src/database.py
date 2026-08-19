@@ -1,12 +1,8 @@
 from mongoengine import connect
-from dotenv import load_dotenv
-import os
+import tools.config as config
 
-load_dotenv()
-
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-DATABASE_NAME = os.getenv("DATABASE_NAME")
+DATABASE_URL = config.DATABASE_URL
+DATABASE_NAME = config.DATABASE_NAME
 
 def init_db():
     conn = connect(

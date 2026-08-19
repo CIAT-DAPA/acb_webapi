@@ -1,0 +1,35 @@
+{% extends "base_email.html" %}
+
+{% block title %}New bulletin for review{% endblock %}
+{% block header_color %}#1565c0{% endblock %}
+
+{% block content %}
+  <h2 style="color:#1565c0;margin-top:0;">📋 New bulletin for review</h2>
+
+  <p>Hi{% if recipient_name %} {{ recipient_name }}{% endif %},</p>
+
+  <p>
+    <strong>{{ author_name }}</strong> submitted the bulletin
+    <strong>"{{ bulletin_title }}"</strong> for your review.
+  </p>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:16px 0;">
+    <tr>
+      <td style="background:#f0f4f8;border-radius:6px;padding:14px 16px;">
+        <span style="color:#666;font-size:13px;">Bulletin</span><br>
+        <strong>{{ bulletin_title }}</strong><br>
+        <span style="color:#666;font-size:13px;">Author: {{ author_name }}</span>
+      </td>
+    </tr>
+  </table>
+
+  <p>Please review the content and approve it or point out any changes needed.</p>
+
+  <p style="margin-top:24px;">
+    <a href="{{ url }}"
+       style="background:#1565c0;color:#ffffff;padding:12px 22px;border-radius:6px;
+              text-decoration:none;font-weight:bold;display:inline-block;">
+      Review bulletin
+    </a>
+  </p>
+{% endblock %}

@@ -9,13 +9,14 @@ import os
 from dotenv import load_dotenv
 from typing import List
 from constants.permissions import GLOBAL_ADMIN_ROLE_NAMES, MODULE_ACCESS_CONTROL
+import tools.config as config
 from tools.utils import serialize_log
 
 load_dotenv()
 
 # Variables globales para Keycloak
-KEYCLOAK_URL = os.getenv("KEYCLOAK_URL")
-KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM")
+KEYCLOAK_URL = config.KEYCLOAK_URL
+KEYCLOAK_REALM = config.KEYCLOAK_REALM
 
 security = HTTPBearer()
 
