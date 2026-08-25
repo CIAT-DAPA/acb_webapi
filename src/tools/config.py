@@ -40,9 +40,15 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 # --- SMTP / notificaciones por correo ---
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SMTP_USERNAME = require_env("SMTP_USERNAME")
-SMTP_PASSWORD = require_env("SMTP_PASSWORD")
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME)
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Bulletin Builder")
 SMTP_TLS = get_bool_env("SMTP_TLS", "True")
 SMTP_SSL = get_bool_env("SMTP_SSL", "False")
+
+# --- Gmail API (opcional) ---
+EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp")  # "smtp" o "gmail_api"
+GMAIL_CLIENT_ID = os.getenv("GMAIL_CLIENT_ID")
+GMAIL_CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET")
+GMAIL_REFRESH_TOKEN = os.getenv("GMAIL_REFRESH_TOKEN")
