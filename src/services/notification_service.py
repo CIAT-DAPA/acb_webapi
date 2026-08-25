@@ -72,7 +72,7 @@ class NotificationService:
 
         self.send_notification(
             recipients=recipients,
-            subject=f"Nuevo boletín para revisión: {context['bulletin_title']}",
+            subject=f"New bulletin for review: {context['bulletin_title']}",
             template="review_requested.html",
             context=context,
         )
@@ -88,7 +88,7 @@ class NotificationService:
 
         self.send_notification(
             recipients=recipients,
-            subject=f"Boletín aprobado: {context['bulletin_title']}",
+            subject=f"Bulletin approved: {context['bulletin_title']}",
             template="review_approved.html",
             context=context,
         )
@@ -104,7 +104,7 @@ class NotificationService:
 
         self.send_notification(
             recipients=recipients,
-            subject=f"Boletín con observaciones: {context['bulletin_title']}",
+            subject=f"Bulletin with comments: {context['bulletin_title']}",
             template="review_rejected.html",
             context=context,
         )
@@ -120,7 +120,7 @@ class NotificationService:
 
         self.send_notification(
             recipients=recipients,
-            subject=f"Nuevo comentario en {context['bulletin_title']}",
+            subject=f"New comment on {context['bulletin_title']}",
             template="review_comment.html",
             context=context,
         )
@@ -136,7 +136,7 @@ class NotificationService:
 
         self.send_notification(
             recipients=recipients,
-            subject=f"Nuevo boletín publicado: {context['bulletin_title']}",
+            subject=f"New bulletin published: {context['bulletin_title']}",
             template="bulletin_published.html",
             context=context,
         )

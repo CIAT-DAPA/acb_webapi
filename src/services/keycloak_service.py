@@ -28,9 +28,7 @@ class KeycloakService:
             return self._token
 
         url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
-        print(f"Requesting Keycloak admin token from {url}...")
-        print(f"Using client_id: {KEYCLOAK_CLIENT_ID}")
-        print(f"Using client_secret: {KEYCLOAK_CLIENT_SECRET}")
+
         response = requests.post(
             url,
             data={
