@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import List, Optional
 from services.groups_service import GroupsService
 from acb_orm.schemas.groups_schema import GroupsRead, GroupsCreate, GroupsUpdate
+from acb_orm.schemas.users_schema import UsersRead
 from auth.access_utils import get_current_user, user_has_permission, is_superadmin, user_is_group_admin
 from constants.permissions import MODULE_ACCESS_CONTROL, ACTION_CREATE, ACTION_UPDATE, ACTION_DELETE
 
@@ -84,6 +85,38 @@ def update_user_role_in_group(group_id: str, user_id: str, new_role_id: str, use
     if not (is_superadmin(updater_user_id) or user_has_permission(updater_user_id, group_id, MODULE_ACCESS_CONTROL, ACTION_UPDATE) or user_is_group_admin(updater_user_id, group_id)):
         raise HTTPException(status_code=403, detail="Not authorized to change roles in this group")
     return groups_service.update_user_role_in_group(group_id, user_id, new_role_id, updater_user_id)
+
+@router.get("/{group_id}/available-users", response_model=List[UsersRead])
+def list_available_users_for_group(group_id: str, user=Depends(get_current_user)):
+    """
+    List active users that may be selected while administering a group.
+
+    This is intentionally scoped to a concrete group instead of exposing the
+    global /users endpoint to every user who can edit one group.
+    """
+    requester_id = user["user_db"]["id"]
+
+    can_manage_members = (
+        is_superadmin(requester_id)
+        or user_is_group_admin(requester_id, group_id)
+        or user_has_permission(
+            requester_id,
+            group_id,
+            MODULE_ACCESS_CONTROL,
+            ACTION_CREATE,
+        )
+    )
+
+    if not can_manage_members:
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to add users to this group",
+        )
+
+    return groups_service.list_available_users_for_group(
+        group_id,
+        requester_id,
+    )
 
 @router.get("/{group_id}/users")
 def list_users_in_group(group_id: str, user=Depends(get_current_user)):
