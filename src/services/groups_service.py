@@ -6,9 +6,10 @@ from acb_orm.collections.roles import Role
 from acb_orm.collections.users import User
 from acb_orm.auxiliaries.user_access import UserAccess
 from acb_orm.schemas.groups_schema import GroupsCreate, GroupsRead, GroupsUpdate
+from acb_orm.schemas.users_schema import UsersRead
 from acb_orm.schemas.log_schema import LogUpdate
 from mongoengine import DoesNotExist
-from auth.access_utils import serialize_log, user_has_permission, is_superadmin, user_is_group_admin
+from auth.access_utils import serialize_log, user_has_permission, is_superadmin, user_is_group_admin, get_superadmins
 from constants.permissions import MODULE_ACCESS_CONTROL, ACTION_CREATE, ACTION_UPDATE, ACTION_DELETE
 from .base_service import BaseService
 from .roles_service import RoleService
@@ -269,6 +270,43 @@ class GroupsService(
         self._update_group_log(group, updater_user_id)
         group.save()
         return self.read_schema.model_validate(self._serialize_document(group))
+
+    def list_available_users_for_group(
+        self,
+        group_id: str,
+        requester_user_id: str,
+    ) -> List[UsersRead]:
+        """
+        Return active users that can be shown in the group membership editor.
+
+        Authorization is handled by the route against the target group.
+        Non-superadmins never receive superadmin users. Existing members are
+        intentionally included so the edit form can resolve their names.
+        """
+        try:
+            Group.objects.get(id=group_id)
+        except Group.DoesNotExist:
+            raise HTTPException(status_code=404, detail="Group not found")
+
+        excluded_ids = set()
+        if not is_superadmin(requester_user_id):
+            excluded_ids = {str(user.id) for user in get_superadmins()}
+
+        users = User.objects(is_active=True)
+        result: List[UsersRead] = []
+
+        for user in users:
+            if str(user.id) in excluded_ids:
+                continue
+
+            data = user.to_mongo().to_dict()
+            data["id"] = str(data.pop("_id"))
+            if "log" in data:
+                data["log"] = serialize_log(user.log)
+
+            result.append(UsersRead.model_validate(data))
+
+        return result
 
     def list_users_in_group(self, group_id: str) -> list:
         """
