@@ -94,6 +94,35 @@ def user_has_permission(user_id: str, group_id: str, module: str, action: str) -
     return role.permissions.get(module, {}).get(action, False)
 
 
+def user_has_permission_in_any_group(user_id: str, module: str, action: str) -> bool:
+    """Return True when the user has the permission in at least one group.
+
+    This mirrors the frontend's module-level permission checks for resources
+    whose access scope is public. Superadmins are always allowed.
+    """
+    if is_superadmin(user_id):
+        return True
+
+    try:
+        user_groups = Group.objects(users_access__user_id=user_id)
+    except Exception:
+        return False
+
+    for group in user_groups:
+        user_access = next(
+            (ua for ua in group.users_access if str(ua.user_id.id) == str(user_id)),
+            None,
+        )
+        if not user_access:
+            continue
+
+        role = Role.objects(id=user_access.role_id.id).first()
+        if role and role.permissions.get(module, {}).get(action, False):
+            return True
+
+    return False
+
+
 def is_superadmin(user_id: str) -> bool:
     """Returns True if user is in any group with a role named in GLOBAL_ADMIN_ROLE_NAMES."""
     user_groups = Group.objects(users_access__user_id=user_id)

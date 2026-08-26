@@ -4,7 +4,13 @@ from services.visual_resources_service import VisualResourcesService
 from acb_orm.schemas.visual_resources_schema import VisualResourcesCreate, VisualResourcesUpdate, VisualResourcesRead
 from acb_orm.enums.status_visual_resource import StatusVisualResource
 from acb_orm.enums.file_type import FileType
-from auth.access_utils import get_current_user, user_has_permission
+from auth.access_utils import get_current_user
+from constants.permissions import (
+    ACTION_CREATE,
+    ACTION_READ,
+    ACTION_UPDATE,
+    ACTION_DELETE,
+)
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 router = APIRouter(prefix="/visual-resources", tags=["Visual Resources"])
@@ -21,7 +27,7 @@ def create_visual_resource(
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    return visual_resources_service.create(resource, user_id, 'templates_management')
+    return visual_resources_service.create_with_permission(resource, user_id)
 
 @router.put("/{resource_id}", response_model=VisualResourcesRead)
 def update_visual_resource(
@@ -34,7 +40,18 @@ def update_visual_resource(
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    return visual_resources_service.update(resource_id, resource, user_id, 'templates_management')
+    status_value = getattr(resource.status, "value", resource.status)
+    action = (
+        ACTION_DELETE
+        if status_value == StatusVisualResource.ARCHIVED.value
+        else ACTION_UPDATE
+    )
+    return visual_resources_service.update_with_permission(
+        resource_id,
+        resource,
+        user_id,
+        action=action,
+    )
 
 @router.get("/", response_model=List[VisualResourcesRead])
 def get_all_visual_resources(
@@ -45,7 +62,7 @@ def get_all_visual_resources(
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    return visual_resources_service.get_accessible_resources(user_id)
+    return visual_resources_service.get_accessible_resources_with_permission(user_id)
 
 @router.get("/name/{name}", response_model=List[VisualResourcesRead])
 def get_visual_resources_by_name(
@@ -58,7 +75,7 @@ def get_visual_resources_by_name(
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
     filters = {"file_name__icontains": name}
-    return visual_resources_service.get_accessible_resources(user_id, filters)
+    return visual_resources_service.get_accessible_resources_with_permission(user_id, filters)
 
 @router.get("/status/{status}", response_model=List[VisualResourcesRead])
 def get_visual_resources_by_status(
@@ -74,7 +91,7 @@ def get_visual_resources_by_status(
         allowed = list(StatusVisualResource._value2member_map_.keys())
         raise HTTPException(status_code=400, detail=f"Invalid status: {status}. Allowed: {allowed}")
     filters = {"status": status}
-    return visual_resources_service.get_accessible_resources(user_id, filters)
+    return visual_resources_service.get_accessible_resources_with_permission(user_id, filters)
 
 @router.get("/type/{file_type}", response_model=List[VisualResourcesRead])
 def get_visual_resources_by_file_type(
@@ -90,7 +107,7 @@ def get_visual_resources_by_file_type(
         allowed = list(FileType._value2member_map_.keys())
         raise HTTPException(status_code=400, detail=f"Invalid file type: {file_type}. Allowed: {allowed}")
     filters = {"file_type": file_type}
-    return visual_resources_service.get_accessible_resources(user_id, filters)
+    return visual_resources_service.get_accessible_resources_with_permission(user_id, filters)
 
 @router.get("/{resource_id}", response_model=VisualResourcesRead)
 def get_visual_resource_by_id(
@@ -102,7 +119,7 @@ def get_visual_resource_by_id(
     """
     user = get_current_user(credentials)
     user_id = user["user_db"]["id"]
-    resources = visual_resources_service.get_accessible_resources(user_id, filters={"id": resource_id})
+    resources = visual_resources_service.get_accessible_resources_with_permission(user_id, filters={"id": resource_id})
     if not resources:
         raise HTTPException(status_code=404, detail="Not found or no access")
     return resources[0]

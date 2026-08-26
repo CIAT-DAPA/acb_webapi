@@ -5,7 +5,7 @@ ACTION_UPDATE = "u"
 ACTION_DELETE = "d"
 
 # Role names considered global admins
-GLOBAL_ADMIN_ROLE_NAMES = ["superadmin"]
+GLOBAL_ADMIN_ROLE_NAMES = ["superadmin", "Super admin"]
 
 # Common module names used across the platform (add more as needed)
 MODULE_ACCESS_CONTROL = "access_control"
@@ -14,4 +14,3 @@ MODULE_TEMPLATE_MANAGEMENT = "template_management"
 MODULE_DASHBOARD_BULLETINS = "dashboard_bulletins"
 MODULE_REVIEW = "review"
 MODULE_CARD_MANAGEMENT = "card_management"
-MODULE_INTEGRATIONS = "external_integrations"
